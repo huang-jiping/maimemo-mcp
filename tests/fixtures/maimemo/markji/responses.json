@@ -1,0 +1,20 @@
+{
+  "list_folders": {"folders": [{"id": "folder-synthetic", "items": [{"object_id": "deck-synthetic", "object_class": "DECK", "order": 0}], "name": "Synthetic folder"}]},
+  "list_decks": {"decks": [{"id": "deck-synthetic", "source": "SELF", "status": "NORMAL", "name": "Synthetic deck", "description": "", "creator": "user-synthetic", "authors": [], "revision": 1, "is_private": false, "card_count": 0, "chapter_count": 0, "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}], "total": 1},
+  "get_deck": {"deck": {"id": "deck-synthetic", "source": "SELF", "status": "NORMAL", "name": "", "description": "", "creator": "user-synthetic", "authors": [], "revision": 1, "is_private": false, "card_count": 0, "chapter_count": 0, "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}},
+  "list_chapters": {"chapters": [{"id": "chapter-synthetic", "deck_id": "deck-synthetic", "name": "", "revision": 1, "card_ids": [], "creator": "user-synthetic", "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}], "chapterset": {"id": "chapterset-synthetic", "deck_id": "deck-synthetic", "revision": 1, "chapter_ids": [], "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}, "cards": []},
+  "get_chapter": {"chapter": {"id": "chapter-synthetic", "deck_id": "deck-synthetic", "name": "", "revision": 1, "card_ids": [], "creator": "user-synthetic", "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}, "cards": []},
+  "get_card": {"card": {"id": "card-synthetic", "status": "NORMAL", "deck_id": "deck-synthetic", "revision": 1, "content": "", "content_type": "PLAIN", "files": [], "creator": "user-synthetic", "source": "SELF", "grammar_version": 1, "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}},
+  "query_files": {"files": [{"id": "file-synthetic", "url": "https://example.invalid/synthetic.png", "mime": "image/png", "size": 4, "info": {}, "expire_time": "2021-07-09T00:16:00.000Z"}]},
+  "empty": {"list_folders": {"folders": []}, "list_decks": {"decks": [], "total": 0}, "list_chapters": {"chapters": []}, "get_chapter": {}, "query_files": {"files": []}},
+  "missing_required": {"list_folders": {}, "list_decks": {"decks": []}, "get_deck": {}, "list_chapters": {}, "get_chapter": {"chapter": {}}, "get_card": {}, "query_files": {}},
+  "unknown_optional": {
+    "list_folders": {"folders": [], "future_optional": {"synthetic": true}},
+    "list_decks": {"decks": [], "total": 0, "future_optional": {"synthetic": true}},
+    "get_deck": {"deck": {"id": "deck-synthetic", "source": "SELF", "status": "NORMAL", "name": "", "description": "", "creator": "user-synthetic", "authors": [], "revision": 1, "is_private": false, "card_count": 0, "chapter_count": 0, "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}, "future_optional": {"synthetic": true}},
+    "list_chapters": {"chapters": [], "future_optional": {"synthetic": true}},
+    "get_chapter": {"future_optional": {"synthetic": true}},
+    "get_card": {"card": {"id": "card-synthetic", "status": "NORMAL", "deck_id": "deck-synthetic", "revision": 1, "content": "", "content_type": "PLAIN", "files": [], "creator": "user-synthetic", "source": "SELF", "grammar_version": 1, "created_time": "2021-07-09T00:16:00.000Z", "updated_time": "2021-07-09T00:16:00.000Z"}, "future_optional": {"synthetic": true}},
+    "query_files": {"files": [], "future_optional": {"synthetic": true}}
+  }
+}

@@ -1,6 +1,6 @@
 """Pinned response schemas, preserving unknown optional upstream fields."""
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -228,3 +228,83 @@ class VocabularyResponse(ResponseModel):
 
 class QueryVocabularyResponse(ResponseModel):
     voc: list[Vocabulary]
+
+
+StudyResponse = Literal["FAMILIAR", "VAGUE", "FORGET", "WELL_FAMILIAR", "CANCEL_WELL_FAMILIAR"]
+
+
+class ParsingWarning(BaseModel):
+    """Machine-readable parsing diagnostic; never a completeness assertion."""
+
+    code: Literal["unknown_study_response"]
+    path: str
+    raw_value: str
+
+
+class StudyProgress(ResponseModel):
+    finished: int
+    total: int
+    study_time: int
+
+
+class StudyTodayItem(ResponseModel):
+    voc_id: str
+    voc_spelling: str
+    order: int
+    first_response: StudyResponse | str | None = None
+    is_new: bool
+    is_finished: bool
+
+
+class StudyRecord(ResponseModel):
+    voc_id: str
+    voc_spelling: str
+    add_date: str
+    first_study_date: str | None = None
+    last_study_date: str | None = None
+    next_study_date: str | None = None
+    last_response: StudyResponse | str | None = None
+    study_count: int
+    tags: Literal["STICKING", "WELL_FAMILIAR"]
+
+
+def _study_warning(value: str | None, path: str) -> list[ParsingWarning]:
+    if value is None or value in get_args(StudyResponse):
+        return []
+    return [ParsingWarning(code="unknown_study_response", path=path, raw_value=value)]
+
+
+class StudyProgressResponse(ResponseModel):
+    progress: StudyProgress
+
+    @property
+    def parsing_warnings(self) -> list[ParsingWarning]:
+        return []
+
+
+class TodayItemsResponse(ResponseModel):
+    today_items: list[StudyTodayItem]
+
+    @property
+    def parsing_warnings(self) -> list[ParsingWarning]:
+        """Keep diagnostics separate from the lossless upstream payload dump."""
+        return [
+            warning
+            for index, item in enumerate(self.today_items)
+            for warning in _study_warning(
+                item.first_response, f"today_items.{index}.first_response"
+            )
+        ]
+
+
+class StudyRecordsResponse(ResponseModel):
+    records: list[StudyRecord]
+    count: int
+
+    @property
+    def parsing_warnings(self) -> list[ParsingWarning]:
+        return [
+            warning
+            for index, item in enumerate(self.records)
+            for warning in _study_warning(item.last_response, f"records.{index}.last_response")
+        ]

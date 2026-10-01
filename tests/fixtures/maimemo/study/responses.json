@@ -1,0 +1,24 @@
+{
+  "complete": {
+    "get_progress": {"progress": {"finished": 1, "total": 2, "study_time": 60000}},
+    "get_today_items": {"today_items": [{"voc_id": "synthetic-apple", "voc_spelling": "apple", "order": 1, "first_response": "VAGUE", "is_new": false, "is_finished": true}]},
+    "query_records": {"records": [{"voc_id": "synthetic-apple", "voc_spelling": "apple", "add_date": "2026-10-01T00:00:00+08:00", "first_study_date": "2026-10-01T00:00:00+08:00", "last_study_date": "2026-10-02T00:00:00+08:00", "next_study_date": "2026-10-03T00:00:00+08:00", "last_response": "FORGET", "study_count": 2, "tags": "STICKING"}], "count": 0}
+  },
+  "empty": {
+    "get_progress": {"progress": {"finished": 0, "total": 0, "study_time": 0}},
+    "get_today_items": {"today_items": []},
+    "query_records": {"records": [], "count": 0}
+  },
+  "uninitialized": {
+    "get_progress": {"progress": {"finished": 0, "total": 0, "study_time": 0}},
+    "get_today_items": {"today_items": []},
+    "query_records": {"records": [], "count": 0}
+  },
+  "unfinished": {"today_items": [{"voc_id": "synthetic-pear", "voc_spelling": "pear", "order": 2, "is_new": true, "is_finished": false}]},
+  "schema_drift": {
+    "get_progress": {"progress": {"finished": 1, "total": 2, "study_time": 60000, "future_optional": null}},
+    "get_today_items": {"today_items": [{"voc_id": "synthetic-apple", "voc_spelling": "apple", "order": 1, "first_response": "FUTURE_RESPONSE", "is_new": false, "is_finished": true, "future_optional": {"version": 2}}]},
+    "query_records": {"records": [{"voc_id": "synthetic-apple", "voc_spelling": "apple", "add_date": "2026-10-01T00:00:00+08:00", "last_response": "FUTURE_RESPONSE", "study_count": 2, "tags": "WELL_FAMILIAR"}], "count": 0}
+  },
+  "missing_identifier": {"today_items": [{"voc_spelling": "pear", "order": 2, "is_new": true, "is_finished": false}]}
+}

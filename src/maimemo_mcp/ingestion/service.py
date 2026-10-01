@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from maimemo_mcp.ingestion.normalizers import (
@@ -44,8 +45,8 @@ class StudyReads(Protocol):
 
 @dataclass(frozen=True)
 class IngestionResult:
-    run_id: UUID
-    status: Literal["complete", "partial", "failed"]
+    run_id: UUID | None
+    status: Literal["complete", "partial", "failed", "skipped"]
     request_count: int
     result_count: int
     warnings: list[str] = field(default_factory=list)
@@ -121,11 +122,21 @@ class StudyIngestionService:
         self.records_range_start = utc_instant(records_range_start)
         self.records_range_end = utc_instant(records_range_end)
 
-    async def collect_today(self, observed_at: datetime) -> IngestionResult:
-        return await self._collect("today", observed_at, self._today)
+    async def collect_today(
+        self,
+        observed_at: datetime,
+        *,
+        scheduled_at: datetime | None = None,
+    ) -> IngestionResult:
+        return await self._collect("today", observed_at, self._today, scheduled_at)
 
-    async def collect_records(self, observed_at: datetime) -> IngestionResult:
-        return await self._collect("records", observed_at, self._records)
+    async def collect_records(
+        self,
+        observed_at: datetime,
+        *,
+        scheduled_at: datetime | None = None,
+    ) -> IngestionResult:
+        return await self._collect("records", observed_at, self._records, scheduled_at)
 
     async def _collect(
         self,
@@ -134,9 +145,10 @@ class StudyIngestionService:
         action: Callable[
             [StudyHistoryRepository, IngestionRun, datetime], Awaitable[tuple[int, list[str]]]
         ],
+        scheduled_at: datetime | None,
     ) -> IngestionResult:
         with observe_http_attempts() as attempts:
-            return await self._collect_observed(task, observed_at, action, attempts)
+            return await self._collect_observed(task, observed_at, action, attempts, scheduled_at)
 
     async def _collect_observed(
         self,
@@ -146,15 +158,32 @@ class StudyIngestionService:
             [StudyHistoryRepository, IngestionRun, datetime], Awaitable[tuple[int, list[str]]]
         ],
         attempts: HttpAttemptObservation,
+        scheduled_at: datetime | None,
     ) -> IngestionResult:
         at = utc_instant(observed_at)
+        slot = None if scheduled_at is None else utc_instant(scheduled_at)
         run = IngestionRun(
-            task_type=task, started_at=at, status="running", request_count=0, result_count=0
+            task_type=task,
+            started_at=at,
+            scheduled_at=slot,
+            status="running",
+            request_count=0,
+            result_count=0,
         )
         try:
             async with self.session_factory.begin() as session:
                 # Serializes all formal streams so first committed baseline is deterministic.
                 await session.execute(text("SELECT pg_advisory_xact_lock(724966203)"))
+                if slot is not None and await session.scalar(
+                    select(IngestionRun.id).where(
+                        IngestionRun.task_type == task,
+                        IngestionRun.scheduled_at == slot,
+                        IngestionRun.status.in_(["complete", "partial"]),
+                    )
+                ):
+                    return IngestionResult(
+                        None, "skipped", 0, 0, ["scheduled slot already collected"]
+                    )
                 session.add(run)
                 await session.flush()
                 result_count, warnings = await action(StudyHistoryRepository(session), run, at)
@@ -173,11 +202,18 @@ class StudyIngestionService:
                 )
             return result
         except Exception as exc:
+            if (
+                isinstance(exc, IntegrityError)
+                and getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+                == "uq_ingestion_run_successful_slot"
+            ):
+                return IngestionResult(None, "skipped", 0, 0, ["scheduled slot already collected"])
             # No exception message is safe: it may contain token, SQL parameters or payload.
             category = "normalization" if isinstance(exc, ValueError) else "collection"
             failure = IngestionRun(
                 task_type=task,
                 started_at=at,
+                scheduled_at=slot,
                 finished_at=max(datetime.now(UTC), at),
                 status="failed",
                 request_count=attempts.count,

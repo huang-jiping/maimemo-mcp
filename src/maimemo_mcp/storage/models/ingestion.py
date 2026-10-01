@@ -4,7 +4,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,11 +27,19 @@ class IngestionRun(UUIDPrimaryKey, Base):
         CheckConstraint("request_count >= 0 AND result_count >= 0", name="counts"),
         CheckConstraint("finished_at IS NULL OR finished_at >= started_at", name="time_order"),
         Index("ix_ingestion_run_task_started", "task_type", "started_at"),
+        Index(
+            "uq_ingestion_run_successful_slot",
+            "task_type",
+            "scheduled_at",
+            unique=True,
+            postgresql_where=text("scheduled_at IS NOT NULL AND status IN ('complete', 'partial')"),
+        ),
     )
 
     task_type: Mapped[str]
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str]
     request_count: Mapped[int] = mapped_column(server_default="0")
     result_count: Mapped[int] = mapped_column(server_default="0")

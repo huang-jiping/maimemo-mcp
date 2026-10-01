@@ -70,7 +70,9 @@ def test_unsupported_writes_reference_no_registered_capability() -> None:
             assert turn["forbidden_capability"] not in ATOMIC_READS
 
 
-def test_smoke_allowlist_is_exact_and_requires_confirmation() -> None:
+def test_smoke_allowlist_is_exact_and_requires_confirmation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     smoke = load_smoke_module()
     assert smoke.READ_ONLY_OPERATIONS == ATOMIC_READS
     with pytest.raises(SystemExit):
@@ -81,6 +83,21 @@ def test_smoke_allowlist_is_exact_and_requires_confirmation() -> None:
         smoke.parse_args(
             ["--confirm-readonly", "--resource-id", "get_markji_deck.unknown=value"]
         )
+    for unsafe in ("contains space", "bad\x7fvalue", "bad\u2028value"):
+        with pytest.raises(SystemExit):
+            smoke.parse_args(
+                [
+                    "--confirm-readonly",
+                    "--operation",
+                    "get_markji_deck",
+                    "--resource-id",
+                    f"get_markji_deck.deck={unsafe}",
+                ]
+            )
+    parser_errors = capsys.readouterr().err
+    assert "contains space" not in parser_errors
+    assert "bad\x7fvalue" not in parser_errors
+    assert "bad\u2028value" not in parser_errors
     parsed = smoke.parse_args(["--confirm-readonly", "--operation", "get_vocabulary"])
     assert parsed.operations == ("get_vocabulary",)
     assert parsed.resource_ids == {}

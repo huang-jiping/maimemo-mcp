@@ -168,7 +168,9 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly \
 ```
 
 支持的字段由代码固定；未知 operation/field、重复字段、空值和未选择操作的 ID 均拒绝。
-ID 值不打印。`PREREQUISITE` 只表示缺少显式 ID，不是 PASS；一旦提供全部 ID，资源不存在、
+值只允许 1–1000 个非空格可打印 ASCII 字符（33–126）；空格、DEL、Unicode 分隔/控制字符
+及其他非 ASCII 都拒绝，错误消息不回显原值。ID 值不打印。`PREREQUISITE` 只表示缺少显式
+ID，不是 PASS；一旦提供全部 ID，资源不存在、
 401、429、超时、5xx、Schema 错误和未知错误均为 FAIL，绝不能按“这是 ID 查询”掩盖错误。
 
 协议检查优先使用 MCP Inspector，但 Inspector 是交互工具，不能把空白启动或超时当成
@@ -181,7 +183,10 @@ ID 值不打印。`PREREQUISITE` 只表示缺少显式 ID，不是 PASS；一旦
 
 语料在 `tests/evaluation/prompts.yaml`。确定性测试只证明语料引用的工具存在、参数符合实时
 Schema、推测性反馈不指定写工具，以及不支持的墨墨写能力未注册；它不能证明模型一定会
-选择该工具。Tunnel 连通后，应逐项观察并只记录：用例 ID、工具名、参数字段名或参数类别、
+选择该工具。动态多轮引用必须来自同一用例的更早 turn；测试沿实时注册工具的 output/input
+Schema 解析路径与 `$ref`、`anyOf`、对象和数组，并校验 JSON 类型、可空性及 format。解析器
+当前只允许标量字符串目标，未知 Schema 形态一律失败，不能复制工具 Schema 到语料来形成
+自证。Tunnel 连通后，应逐项观察并只记录：用例 ID、工具名、参数字段名或参数类别、
 结果类别、警告代码、是否要求用户确认。不要记录参数值中的个人标识符或任何结果正文。
 
 至少执行：直接请求、间接表达、多轮标识符复用、stale/partial、明确反馈、推测性反馈、

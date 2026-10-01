@@ -59,6 +59,10 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly
 不会调用该工具。输出只包含操作名、PASS/FAIL 或 PREREQUISITE、耗时、记录数和缺少的固定
 字段名，不输出或保存 ID 值、响应正文、异常正文及个人数据。
 
+资源 ID 采用 fail-closed 输入策略：只接受长度 1–1000 的非空格可打印 ASCII（字节范围
+33–126）；空格、DEL、Unicode 分隔符/控制字符及其他非 ASCII 字符都在调用前拒绝，错误
+消息不回显原值。如果未来官方 ID 合法字符范围改变，应先增加契约证据与回归测试再调整。
+
 例如，只有以下参数齐全时才会调用章节读取；参数值不会出现在输出中：
 
 ```text
@@ -76,6 +80,8 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly \
 
 `tests/evaluation/prompts.yaml` 覆盖每个组合工具的直接和间接表达、多轮标识符复用、
 过期/部分数据、明确反馈、推测性反馈、撤销以及不支持的墨墨写入请求。确定性测试只校验
-语料结构、已注册工具、参数 Schema 和安全边界，不声称已经验证模型会选择正确工具。
+语料结构、已注册工具、参数 Schema 和安全边界；多轮引用还会沿前序工具 output Schema 和
+当前工具 input Schema 解析 `$ref`/`anyOf`/对象/数组路径，并 fail-closed 校验类型、可空性
+和 format 兼容性。它不声称已经验证模型会选择正确工具。
 真正的工具选择、参数生成和确认行为必须在 Secure MCP Tunnel 连通后由 ChatGPT 工作区
 端到端观察，并按 `docs/operations.md` 只记录工具名、参数类别、结果类别和警告代码。

@@ -123,12 +123,12 @@ def parse_args(argv: Sequence[str] | None = None) -> Arguments:
         if operation not in selected:
             parser.error("resource ID operation must also be selected")
         invalid_value = (
-            not value.strip()
+            not value
             or len(value) > 1000
-            or any(ord(character) < 32 for character in value)
+            or any(not 33 <= ord(character) <= 126 for character in value)
         )
         if invalid_value:
-            parser.error("resource ID value must be 1..1000 printable characters")
+            parser.error("resource ID value must be 1..1000 non-space printable ASCII characters")
         if pair in resource_ids:
             parser.error("resource ID must not be supplied more than once")
         resource_ids[pair] = value

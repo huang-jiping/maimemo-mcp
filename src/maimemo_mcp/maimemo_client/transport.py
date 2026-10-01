@@ -23,7 +23,7 @@ from maimemo_mcp.maimemo_client.errors import (
 from maimemo_mcp.maimemo_client.rate_limit import utc_now
 
 T = TypeVar("T", bound=BaseModel)
-BASE_URL = "https://open.maimemo.com"
+BASE_URL = "https://open.maimemo.com/open"
 
 
 class Limiter(Protocol):

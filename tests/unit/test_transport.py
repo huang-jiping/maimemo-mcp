@@ -35,6 +35,21 @@ class Limiter:
         self.fingerprints.append(fingerprint)
 
 
+async def test_request_uses_pinned_production_server_prefix():
+    urls = []
+
+    def handle(request):
+        urls.append(str(request.url))
+        return httpx.Response(200, json={"value": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        transport = MaimemoTransport(SecretStr(TOKEN), SecretStr(KEY), Limiter(), client=client)
+        await transport.request(
+            "GET", "/api/v1/markji/decks", params={"limit": 2}, response_type=Response
+        )
+    assert urls == ["https://open.maimemo.com/open/api/v1/markji/decks?limit=2"]
+
+
 @pytest.mark.parametrize(
     "status,error",
     [

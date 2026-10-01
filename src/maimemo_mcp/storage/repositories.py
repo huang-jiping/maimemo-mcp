@@ -10,6 +10,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from maimemo_mcp.analysis.models import (
+    DailyEvidence,
+    RecentResponse,
+    WeaknessEvidence,
+    WeaknessResult,
+    WeakWordQuery,
+)
 from maimemo_mcp.ingestion.hashing import stable_payload_hash
 from maimemo_mcp.ingestion.normalizers import (
     SHANGHAI,
@@ -19,6 +26,7 @@ from maimemo_mcp.ingestion.normalizers import (
     utc_instant,
 )
 from maimemo_mcp.ingestion.scheduler import advisory_key
+from maimemo_mcp.storage.models.analysis import WeaknessScore
 from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
 from maimemo_mcp.storage.models.learning import (
     DailyProgress,
@@ -62,6 +70,191 @@ class StudyHistoryRepository:
         self.clock = clock
         self.today_interval = today_interval
         self.records_interval = records_interval
+
+    async def weakness_evidence(self, as_of: datetime) -> list[WeaknessEvidence]:
+        """Choose visible versions; deduplicated response refreshes are not review events.
+
+        When latest observation is beyond cutoff, immutable source time is the only
+        retained earlier observation. Intermediate identical observations cannot be
+        reconstructed from this compressed history.
+        """
+        at = utc_instant(as_of)
+        health = await self.get_data_health(at)
+        visible = (
+            ApiSnapshot.fetched_at <= at,
+            IngestionRun.finished_at <= at,
+            IngestionRun.status.in_(["complete", "partial"]),
+        )
+        daily_rows = (
+            await self.session.execute(
+                select(DailyWordObservation, ApiSnapshot)
+                .join(ApiSnapshot, DailyWordObservation.source_snapshot_id == ApiSnapshot.id)
+                .join(IngestionRun, ApiSnapshot.ingestion_run_id == IngestionRun.id)
+                .where(
+                    *visible,
+                    DailyWordObservation.first_observed_at <= at,
+                    DailyWordObservation.study_date <= at.astimezone(SHANGHAI).date(),
+                )
+            )
+        ).all()
+        days: dict[UUID, dict[date, tuple[datetime, UUID, DailyWordObservation]]] = {}
+        for row, source in daily_rows:
+            effective = (
+                row.last_observed_at if row.last_observed_at <= at else row.first_observed_at
+            )
+            key = (effective, source.id)
+            by_day = days.setdefault(row.vocabulary_id, {})
+            existing = by_day.get(row.study_date)
+            if existing is None or key > existing[:2]:
+                by_day[row.study_date] = (effective, source.id, row)
+        record_rows = (
+            await self.session.execute(
+                select(StudyRecordSnapshot, ApiSnapshot)
+                .join(ApiSnapshot, StudyRecordSnapshot.source_snapshot_id == ApiSnapshot.id)
+                .join(IngestionRun, ApiSnapshot.ingestion_run_id == IngestionRun.id)
+                .where(*visible)
+            )
+        ).all()
+        records: dict[UUID, tuple[datetime, UUID, StudyRecordSnapshot]] = {}
+        responses: dict[UUID, dict[tuple[datetime, str], RecentResponse]] = {}
+        for record_row, record_source in record_rows:
+            effective = (
+                record_row.observed_at if record_row.observed_at <= at else record_source.fetched_at
+            )
+            if record_row.last_studied_at is not None and record_row.last_feedback is not None:
+                if record_row.last_studied_at <= at:
+                    events = responses.setdefault(record_row.vocabulary_id, {})
+                    event_key = (record_row.last_studied_at, record_row.last_feedback)
+                    # Earliest retained observation supplies evidence range; polling
+                    # refreshes never manufacture a second response event.
+                    existing_event = events.get(event_key)
+                    first_seen = min(effective, record_source.fetched_at)
+                    if existing_event is None or first_seen < existing_event.observed_at:
+                        events[event_key] = RecentResponse(
+                            record_row.last_feedback, record_row.last_studied_at, first_seen
+                        )
+            existing_record = records.get(record_row.vocabulary_id)
+            if existing_record is None or (effective, record_source.id) > existing_record[:2]:
+                records[record_row.vocabulary_id] = (effective, record_source.id, record_row)
+        word_ids = set(days) | set(records)
+        words = (
+            await self.session.scalars(
+                select(Vocabulary)
+                .where(Vocabulary.id.in_(word_ids), Vocabulary.first_seen_at <= at)
+                .order_by(Vocabulary.id)
+            )
+        ).all()
+        results: list[WeaknessEvidence] = []
+        for word in words:
+            selected_days = days.get(word.id, {})
+            observations = tuple(
+                DailyEvidence(
+                    day,
+                    effective,
+                    row.first_feedback,
+                    row.is_complete,
+                    row.is_new,
+                    row.first_observed_at,
+                )
+                for day, (effective, _, row) in sorted(selected_days.items())
+            )
+            selected_record = records.get(word.id)
+            record = selected_record[2] if selected_record else None
+            sources = [(effective, source_id) for effective, source_id, _ in selected_days.values()]
+            if selected_record:
+                sources.append(selected_record[:2])
+            results.append(
+                WeaknessEvidence(
+                    vocabulary_id=word.id,
+                    spelling=word.spelling,
+                    observations=observations,
+                    record_observed_at=selected_record[0] if selected_record else None,
+                    last_feedback=record.last_feedback if record else None,
+                    last_studied_at=record.last_studied_at if record else None,
+                    next_study_at=record.next_study_at if record else None,
+                    added_at=record.added_at if record else None,
+                    study_count=record.study_count if record else None,
+                    tags=tuple(record.tags) if record and record.tags is not None else None,
+                    quality=health.completeness,
+                    latest_snapshot_id=max(sources)[1],
+                    recent_responses=tuple(responses.get(word.id, {}).values()),
+                )
+            )
+        return results
+
+    async def save_weakness(self, result: WeaknessResult) -> None:
+        if result.latest_snapshot_id is None:
+            raise ValueError("Persisted weakness requires a source snapshot")
+        values = {
+            "score": result.score,
+            "risk_level": result.risk_level,
+            "confidence": result.confidence,
+            "factors": {
+                "values": {
+                    name: {"value": factor.value, "weight": factor.weight}
+                    for name, factor in result.factors.items()
+                },
+                "reason_codes": list(result.reason_codes),
+                "is_new": result.is_new,
+                "spelling": result.spelling,
+            },
+            "evidence_from": result.evidence_from,
+            "evidence_through": result.evidence_through,
+            "latest_snapshot_id": result.latest_snapshot_id,
+        }
+        await self.session.execute(
+            insert(WeaknessScore)
+            .values(
+                id=uuid4(),
+                vocabulary_id=result.vocabulary_id,
+                algorithm_version=result.algorithm_version,
+                computed_at=result.computed_at,
+                **values,
+            )
+            .on_conflict_do_update(constraint="uq_weakness_score_version", set_=values)
+        )
+
+    async def weak_words(self, query: WeakWordQuery, version: str) -> list[WeaknessScore]:
+        # Select latest first: an old high score must not survive a newer low score.
+        latest = (
+            select(
+                WeaknessScore.id,
+                func.row_number()
+                .over(
+                    partition_by=WeaknessScore.vocabulary_id,
+                    order_by=(WeaknessScore.computed_at.desc(), WeaknessScore.id.desc()),
+                )
+                .label("position"),
+            )
+            .where(
+                WeaknessScore.algorithm_version == version,
+                WeaknessScore.computed_at <= query.as_of,
+            )
+            .subquery()
+        )
+        statement = (
+            select(WeaknessScore)
+            .join(latest, latest.c.id == WeaknessScore.id)
+            .where(
+                latest.c.position == 1,
+                WeaknessScore.score >= query.min_score,
+            )
+        )
+        if query.start is not None:
+            statement = statement.where(WeaknessScore.evidence_through >= query.start)
+        if query.end is not None:
+            statement = statement.where(WeaknessScore.evidence_from <= query.end)
+        return list(
+            (
+                await self.session.scalars(
+                    statement.order_by(
+                        WeaknessScore.score.desc(),
+                        WeaknessScore.confidence.desc(),
+                        WeaknessScore.vocabulary_id,
+                    ).limit(query.limit)
+                )
+            ).all()
+        )
 
     async def get_data_health(self, now: datetime) -> DataHealth:
         at = utc_instant(now)

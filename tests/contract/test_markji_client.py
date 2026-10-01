@@ -230,3 +230,65 @@ def test_each_pinned_required_resource_field_is_enforced(
         del malformed[required]
         with pytest.raises(ValidationError):
             model.model_validate(malformed)
+
+
+PINNED_SPEC = yaml.safe_load(
+    (Path(__file__).parents[2] / "openapi/maimemo-api.yaml").read_text(encoding="utf-8")
+)
+OPTIONAL_SHAPES = [
+    (
+        MarkjiRootDeck,
+        FIXTURES["get_deck"]["deck"],
+        PINNED_SPEC["components"]["schemas"]["MarkjiRootDeck"],
+    ),
+    (MarkjiDeck, FIXTURES["get_deck"]["deck"], PINNED_SPEC["components"]["schemas"]["MarkjiDeck"]),
+    (MarkjiCard, FIXTURES["get_card"]["card"], PINNED_SPEC["components"]["schemas"]["MarkjiCard"]),
+    (
+        MarkjiFolder,
+        FIXTURES["list_folders"]["folders"][0],
+        PINNED_SPEC["components"]["schemas"]["MarkjiFolder"],
+    ),
+    (
+        ListChaptersResponse,
+        FIXTURES["list_chapters"],
+        PINNED_SPEC["paths"]["/api/v1/markji/decks/{deck}/chapters"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"],
+    ),
+    (
+        GetChapterResponse,
+        FIXTURES["get_chapter"],
+        PINNED_SPEC["paths"]["/api/v1/markji/decks/{deck}/chapters/{chapter}"]["get"]["responses"][
+            "200"
+        ]["content"]["application/json"]["schema"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "model,payload,field",
+    [
+        pytest.param(model, payload, field, id=f"{model.__name__}.{field}")
+        for model, payload, schema in OPTIONAL_SHAPES
+        for field, field_schema in schema["properties"].items()
+        if field not in schema["required"]
+        and field_schema["type"] in ("string", "array", "object")
+        and not field_schema.get("nullable", False)
+    ],
+)
+def test_pinned_optional_nonnullable_field_can_be_omitted_but_cannot_be_null(
+    model: type[BaseModel],
+    payload: dict[str, Any],
+    field: str,
+) -> None:
+    omitted = copy.deepcopy(payload)
+    omitted.pop(field, None)
+    assert field not in model.model_validate(omitted).model_dump(exclude_unset=True)
+    with pytest.raises(ValidationError):
+        model.model_validate(dict(omitted, **{field: None}))
+
+
+def test_unknown_optional_null_is_preserved() -> None:
+    assert GetChapterResponse.model_validate({"future_optional": None}).model_extra == {
+        "future_optional": None
+    }

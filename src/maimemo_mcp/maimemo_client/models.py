@@ -2,11 +2,23 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ResponseModel(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value: Any) -> Any:
+        """Pinned fields may be omitted, but none of them declares a nullable type.
+
+        Field validators run on supplied known fields, leaving omitted defaults and
+        unknown upstream extensions intact.
+        """
+        if value is None:
+            raise ValueError("Declared response fields cannot be null")
+        return value
 
 
 class MarkjiRootDeck(ResponseModel):

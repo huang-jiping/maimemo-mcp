@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from maimemo_mcp.maimemo_client.rate_limit import SharedRateLimiter
 from maimemo_mcp.storage.database import create_session_factory
@@ -86,3 +86,43 @@ async def test_crossing_aligned_bucket_boundary_does_not_reset_rolling_limit(dat
     decision = await limiter.reserve(FINGERPRINT, NOW + timedelta(seconds=10))
     assert not decision.allowed
     assert decision.retry_at == NOW + timedelta(seconds=19)
+
+
+async def test_acquire_reservation_starts_when_database_lock_is_obtained(database):
+    sessions = create_session_factory(database)
+    current = NOW
+    limiter = SharedRateLimiter(sessions, clock=lambda: current)
+    waiting = None
+    try:
+        async with sessions.begin() as holder:
+            # Signed prefix of the synthetic fingerprint, hand-derived independently.
+            await holder.execute(text("SELECT pg_advisory_xact_lock(-6148914691236517206)"))
+            waiting = asyncio.create_task(limiter.acquire(FINGERPRINT))
+            async with asyncio.timeout(5):
+                async with sessions() as observer:
+                    while not await observer.scalar(
+                            text(
+                                "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                                "WHERE locktype = 'advisory' AND NOT granted "
+                                "AND classid = '2863311530'::oid "
+                                "AND objid = '2863311530'::oid AND objsubid = 1)"
+                        )
+                    ):
+                        await asyncio.sleep(0.01)
+            # The actual database transaction is blocked, not a mocked call.
+            current = NOW + timedelta(seconds=11)
+        await asyncio.wait_for(waiting, timeout=5)
+        async with sessions() as session:
+            first_expiry = await session.scalar(
+                select(ApiRateLimitWindow.updated_at).where(ApiRateLimitWindow.window_type == "10s")
+            )
+        assert first_expiry == NOW + timedelta(seconds=21)
+        for _ in range(19):
+            assert (await limiter.reserve(FINGERPRINT, current)).allowed
+        twenty_first = await limiter.reserve(FINGERPRINT, current)
+        assert not twenty_first.allowed
+        assert twenty_first.retry_at == NOW + timedelta(seconds=21)
+    finally:
+        if waiting is not None and not waiting.done():
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)

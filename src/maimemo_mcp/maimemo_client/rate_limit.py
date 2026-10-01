@@ -38,15 +38,23 @@ class SharedRateLimiter:
         self._sleep = sleep
 
     async def reserve(self, token_fingerprint: str, now: datetime) -> RateLimitDecision:
+        return await self._reserve(token_fingerprint, now)
+
+    async def _reserve(
+        self, token_fingerprint: str, now: datetime | None = None
+    ) -> RateLimitDecision:
         if not re.fullmatch(r"[0-9a-f]{64}", token_fingerprint):
             raise ValueError("Invalid token fingerprint")
-        if now.tzinfo is None or now.utcoffset() is None:
-            raise ValueError("Reservation time must have a timezone")
-        now = now.astimezone(UTC)
         # A signed 64-bit lock namespace is stable across Python processes.
         lock_id = int.from_bytes(bytes.fromhex(token_fingerprint)[:8], "big", signed=True)
         async with self._sessions.begin() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_id})
+            # Production requests must not consume time while waiting for this lock.
+            # Explicit reserve timestamps remain deterministic for callers/tests.
+            now = self._clock() if now is None else now
+            if now.tzinfo is None or now.utcoffset() is None:
+                raise ValueError("Reservation time must have a timezone")
+            now = now.astimezone(UTC)
             await session.execute(
                 delete(ApiRateLimitWindow).where(
                     ApiRateLimitWindow.token_hash == token_fingerprint,
@@ -90,7 +98,7 @@ class SharedRateLimiter:
 
     async def acquire(self, token_fingerprint: str) -> None:
         while True:
-            decision = await self.reserve(token_fingerprint, self._clock())
+            decision = await self._reserve(token_fingerprint)
             if decision.allowed:
                 return
             assert decision.retry_at is not None

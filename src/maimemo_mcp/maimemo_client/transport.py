@@ -43,8 +43,14 @@ class MaimemoTransport:
         jitter: Callable[[], float] = random.random,
         max_attempts: int = 3,
     ) -> None:
-        if not token.get_secret_value().strip() or not fingerprint_key.get_secret_value().strip():
-            raise ValueError("Credential and fingerprint key must not be empty")
+        # Validate without encoding: UnicodeEncodeError retains the complete input.
+        # Bearer credentials cannot contain whitespace or HTTP control characters.
+        if not token.get_secret_value() or any(
+            not 33 <= ord(character) <= 126 for character in token.get_secret_value()
+        ):
+            raise AuthenticationError("Invalid API credential")
+        if not fingerprint_key.get_secret_value().strip():
+            raise ValueError("Fingerprint key must not be empty")
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
         self._token = token

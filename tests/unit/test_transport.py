@@ -157,3 +157,43 @@ async def test_transport_rejects_nonrelative_or_embedded_query_paths(path):
         transport = MaimemoTransport(SecretStr(TOKEN), SecretStr(KEY), Limiter(), client=client)
         with pytest.raises(InvalidRequestError):
             await transport.request("GET", path, response_type=Response)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "private-secret-é",
+        "private-secret\r\nInjected: yes",
+        "private-secret\x00",
+        "private-secret\x7f",
+    ],
+)
+async def test_invalid_credential_is_rejected_without_sensitive_exception_or_logs(token, caplog):
+    caplog.set_level(logging.DEBUG)
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"value": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(AuthenticationError) as caught:
+            transport = MaimemoTransport(SecretStr(token), SecretStr(KEY), Limiter(), client=client)
+            await transport.request("GET", "/api/test", response_type=Response)
+    error = caught.value
+    assert type(error) is AuthenticationError
+    assert str(error) == "Invalid API credential"
+    for representation in (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(error.__cause__),
+        repr(error.__context__),
+        caplog.text,
+    ):
+        assert token not in representation
+        assert "Authorization" not in representation
+        assert "Bearer" not in representation
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert calls == []

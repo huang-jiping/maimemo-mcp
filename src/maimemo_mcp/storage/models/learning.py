@@ -4,11 +4,11 @@ from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import (
-    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -21,14 +21,14 @@ from maimemo_mcp.storage.base import Base, ObservationTimes, UUIDPrimaryKey
 class Vocabulary(UUIDPrimaryKey, Base):
     __tablename__ = "vocabulary"
     __table_args__ = (
-        CheckConstraint("maimemo_id > 0", name="maimemo_id"),
+        CheckConstraint("length(maimemo_id) > 0", name="maimemo_id"),
         CheckConstraint(
             "length(normalized_spelling) > 0 AND length(spelling) > 0", name="spelling"
         ),
         CheckConstraint("last_seen_at >= first_seen_at", name="time_order"),
     )
 
-    maimemo_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    maimemo_id: Mapped[str] = mapped_column(Text, unique=True)
     normalized_spelling: Mapped[str] = mapped_column(index=True)
     spelling: Mapped[str]
     first_seen_at: Mapped[datetime] = mapped_column(
@@ -64,7 +64,12 @@ class DailyProgress(UUIDPrimaryKey, ObservationTimes, Base):
 class DailyWordObservation(UUIDPrimaryKey, ObservationTimes, Base):
     __tablename__ = "daily_word_observation"
     __table_args__ = (
-        UniqueConstraint("study_date", "vocabulary_id", name="uq_daily_word_observation_day_word"),
+        UniqueConstraint(
+            "study_date",
+            "vocabulary_id",
+            "source_snapshot_id",
+            name="uq_daily_word_observation_day_word_source",
+        ),
         CheckConstraint("first_feedback IS NULL OR length(first_feedback) > 0", name="feedback"),
         CheckConstraint("last_observed_at >= first_observed_at", name="time_order"),
         Index("ix_daily_word_observation_word_day", "vocabulary_id", "study_date"),

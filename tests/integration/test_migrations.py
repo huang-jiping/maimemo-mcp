@@ -1,10 +1,13 @@
 """Migration tests catch missing schema, wrong types, and irreversible upgrades."""
 
 import asyncio
+from uuid import uuid4
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 EXPECTED_TABLES = {
@@ -27,7 +30,7 @@ async def test_upgrade_creates_expected_tables(database: AsyncEngine) -> None:
         tables = await connection.run_sync(lambda conn: inspect(conn).get_table_names())
         assert set(tables) == EXPECTED_TABLES
         version = await connection.scalar(text("SELECT schema_version FROM schema_metadata"))
-        assert version == "0001"
+        assert version == "0002"
 
 
 async def test_upgrade_downgrade_reupgrade(postgres_url: str, alembic_config: Config) -> None:
@@ -88,3 +91,46 @@ async def test_migration_and_orm_have_no_schema_drift(database: AsyncEngine) -> 
             lambda conn: compare_metadata(MigrationContext.configure(conn), Base.metadata)
         )
         assert differences == []
+
+
+async def test_0002_round_trip_preserves_compatible_vocabulary(
+    database: AsyncEngine,
+    alembic_config: Config,
+) -> None:
+    identity = uuid4()
+    async with database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO vocabulary (id, maimemo_id, normalized_spelling, spelling) "
+                "VALUES (:id, '123', 'apple', 'Apple')"
+            ),
+            {"id": identity},
+        )
+    await asyncio.to_thread(command.downgrade, alembic_config, "0001")
+    async with database.connect() as connection:
+        assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == 123
+    await asyncio.to_thread(command.upgrade, alembic_config, "head")
+    async with database.connect() as connection:
+        assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == "123"
+        assert await connection.scalar(text("SELECT id FROM vocabulary")) == identity
+
+
+@pytest.mark.parametrize("upstream_id", ["opaque", "007"])
+async def test_0002_downgrade_rejects_incompatible_ids_without_deleting_data(
+    database: AsyncEngine,
+    alembic_config: Config,
+    upstream_id: str,
+) -> None:
+    async with database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO vocabulary (id, maimemo_id, normalized_spelling, spelling) "
+                "VALUES (:id, :upstream_id, 'apple', 'Apple')"
+            ),
+            {"id": uuid4(), "upstream_id": upstream_id},
+        )
+    with pytest.raises(DataError):
+        await asyncio.to_thread(command.downgrade, alembic_config, "0001")
+    async with database.connect() as connection:
+        assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == upstream_id
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002"

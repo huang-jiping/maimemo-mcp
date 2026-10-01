@@ -113,12 +113,12 @@ async def test_session_factory_persists_and_reads_timezone_aware_data(
     try:
         factory = create_session_factory(engine)
         async with factory.begin() as session:
-            word = Vocabulary(maimemo_id=123, normalized_spelling="affect", spelling="affect")
+            word = Vocabulary(maimemo_id="123", normalized_spelling="affect", spelling="affect")
             session.add(word)
         async with factory() as session:
             stored = await session.get(Vocabulary, word.id)
             assert stored is not None
-            assert stored.maimemo_id == 123
+            assert stored.maimemo_id == "123"
             assert stored.first_seen_at.utcoffset() is not None
         assert engine.dialect.name == "postgresql"
         assert engine.dialect.driver == "psycopg"
@@ -140,7 +140,7 @@ async def test_unknown_upstream_states_and_missing_tags_remain_representable(
 
     factory = async_sessionmaker(database, expire_on_commit=False)
     async with factory.begin() as session:
-        word = Vocabulary(maimemo_id=456, normalized_spelling="test", spelling="test")
+        word = Vocabulary(maimemo_id="456", normalized_spelling="test", spelling="test")
         run = IngestionRun(task_type="today", status="running")
         session.add_all([word, run])
         await session.flush()
@@ -238,3 +238,45 @@ async def test_partial_progress_still_rejects_negative_total(database: AsyncEngi
                     ),
                     {"id": uuid4()},
                 )
+
+
+async def test_schema_supports_opaque_ids_baseline_and_versioned_daily_observations(
+    database: AsyncEngine,
+) -> None:
+    # Removing any Task 7 DDL change breaks this real persistence contract.
+    async with database.begin() as connection:
+        word, run = uuid4(), uuid4()
+        await connection.execute(
+            text(
+                "INSERT INTO vocabulary (id, maimemo_id, normalized_spelling, spelling) "
+                "VALUES (:id, 'opaque-id', 'apple', 'Apple')"
+            ),
+            {"id": word},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO ingestion_run (id, task_type, status) "
+                "VALUES (:id, 'today', 'complete')"
+            ),
+            {"id": run},
+        )
+        for kind in ("BASELINE", "OBSERVATION"):
+            snapshot = uuid4()
+            await connection.execute(
+                text(
+                    "INSERT INTO api_snapshot (id, endpoint, request_hash, "
+                    "content_hash, raw_response, "
+                    "ingestion_run_id, observation_kind) "
+                    "VALUES (:id, 'today', 'req', :hash, '{}'::jsonb, :run, :kind)"
+                ),
+                {"id": snapshot, "run": run, "kind": kind, "hash": kind},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO daily_word_observation "
+                    "(id, study_date, vocabulary_id, source_snapshot_id) "
+                    "VALUES (:id, '2026-10-02', :word, :snapshot)"
+                ),
+                {"id": uuid4(), "word": word, "snapshot": snapshot},
+            )
+        assert await connection.scalar(text("SELECT count(*) FROM daily_word_observation")) == 2

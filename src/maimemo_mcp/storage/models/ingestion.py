@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,6 +38,7 @@ class ApiSnapshot(UUIDPrimaryKey, Base):
         ),
         CheckConstraint("length(endpoint) > 0", name="endpoint"),
         CheckConstraint("length(request_hash) > 0 AND length(content_hash) > 0", name="hashes"),
+        CheckConstraint("observation_kind IN ('BASELINE', 'OBSERVATION')", name="observation_kind"),
         Index("ix_api_snapshot_endpoint_fetched", "endpoint", "fetched_at"),
         Index("ix_api_snapshot_ingestion_run_id", "ingestion_run_id"),
     )
@@ -48,3 +49,4 @@ class ApiSnapshot(UUIDPrimaryKey, Base):
     raw_response: Mapped[dict[str, Any]] = mapped_column(JSONB)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ingestion_run_id: Mapped[UUID] = mapped_column(ForeignKey("ingestion_run.id"))
+    observation_kind: Mapped[str] = mapped_column(Text, server_default="OBSERVATION")

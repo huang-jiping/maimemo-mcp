@@ -57,7 +57,13 @@ class Settings(BaseModel):
 
 
 def _read_secret(path: Path) -> SecretStr:
-    value = path.read_text(encoding="utf-8").rstrip("\r\n")
+    try:
+        value = path.read_text(encoding="utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        value = None
+    # Raise outside the handler so __context__ cannot retain secret bytes.
+    if value is None:
+        raise ValueError("Secret file must be valid UTF-8") from None
     if not value.strip():
         raise ValueError("Secret file must not be empty")
     return SecretStr(value)

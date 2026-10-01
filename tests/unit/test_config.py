@@ -115,3 +115,28 @@ def test_load_reads_process_environment(
     for name, value in environ.items():
         monkeypatch.setenv(name, value)
     assert Settings.load().token_file == Path(environ["MAIMEMO_TOKEN_FILE"])
+
+
+@pytest.mark.parametrize(("field", "reader", "secret"), [
+    ("MAIMEMO_TOKEN_FILE", "read_maimemo_token", "synthetic-token"),
+    ("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "read_token_fingerprint_key", "synthetic-key"),
+])
+def test_invalid_utf8_secret_file_raises_redacted_error(
+    environ: dict[str, str], field: str, reader: str, secret: str
+) -> None:
+    Path(environ[field]).write_bytes(secret.encode("utf-8") + b"\xff")
+    settings = Settings.load(environ)
+
+    with pytest.raises(ValueError) as caught:
+        getattr(settings, reader)()
+
+    error = caught.value
+    assert secret not in repr(error)
+    assert secret not in repr(error.args)
+    assert secret not in repr(error.__cause__)
+    assert secret not in repr(error.__context__)
+    assert type(error) is ValueError
+    assert str(error) == "Secret file must be valid UTF-8"
+    assert error.args == ("Secret file must be valid UTF-8",)
+    assert error.__cause__ is None
+    assert error.__context__ is None

@@ -256,13 +256,23 @@ async def test_exact_inventory_safety_and_explicit_schemas(settings: Settings) -
         "query_study_records",
         "get_vocabulary",
         "query_vocabulary",
+        "get_daily_study_dashboard",
+        "get_word_learning_profile",
+        "get_weak_words",
+        "get_due_review_overview",
+        "get_learning_data_health",
+        "record_confusion_feedback",
+        "retract_feedback",
     }
+    assert len(tools) == 24
     for tool in tools:
         assert tool.annotations is not None
-        assert tool.annotations.read_only_hint is True
+        feedback = tool.name in ("record_confusion_feedback", "retract_feedback")
+        assert tool.annotations.read_only_hint is (not feedback)
         assert tool.annotations.destructive_hint is False
         assert tool.annotations.idempotent_hint is True
-        assert tool.annotations.open_world_hint is True
+        live = tool.name in CLIENT_METHODS or tool.name == "get_word_learning_profile"
+        assert tool.annotations.open_world_hint is live
         assert tool.description
         assert tool.input_schema["type"] == "object"
         assert "properties" in tool.input_schema

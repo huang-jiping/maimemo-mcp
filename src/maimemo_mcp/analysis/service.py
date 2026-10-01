@@ -1,8 +1,10 @@
 """Transactional score persistence and user-facing explanations over local history."""
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import Literal, cast
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -51,9 +53,18 @@ class WeaknessService:
                 await repository.save_weakness(calculate_weakness(word, at, self.version))
             return len(evidence)
 
-    async def list_weak_words(self, query: WeakWordQuery) -> list[WeaknessResult]:
+    async def list_weak_words(
+        self,
+        query: WeakWordQuery,
+        *,
+        vocabulary_ids: Sequence[UUID] | None = None,
+    ) -> list[WeaknessResult]:
         async with self.session_factory() as session:
-            scores = await StudyHistoryRepository(session).weak_words(query, self.version)
+            scores = await StudyHistoryRepository(session).weak_words(
+                query,
+                self.version,
+                vocabulary_ids=vocabulary_ids,
+            )
             results = []
             for row in scores:
                 payload = row.factors

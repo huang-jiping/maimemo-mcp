@@ -68,7 +68,7 @@ async def test_server_discovery_uses_mcp_v2_in_process(settings: Settings) -> No
     assert server.dependencies is None
     async with Client(server.sdk) as client:
         assert client.protocol_version is not None
-        assert len((await client.list_tools()).tools) == 17
+        assert len((await client.list_tools()).tools) == 24
         assert client.instructions is not None
         assert "17" in client.instructions
         assert "read-only" in client.instructions
@@ -94,7 +94,7 @@ async def test_standard_streamable_http_client_and_routes(
                 async with ClientSession(*streams) as session:
                     result = await session.discover()
                     assert result.instructions is not None
-                    assert len((await session.list_tools()).tools) == 17
+                    assert len((await session.list_tools()).tools) == 24
             response = await http_client.post(
                 "/mcp",
                 headers={"Accept": "application/json, text/event-stream"},

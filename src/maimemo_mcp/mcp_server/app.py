@@ -12,7 +12,7 @@ from starlette.types import Receive, Scope, Send
 from maimemo_mcp.config import Settings
 from maimemo_mcp.mcp_server.dependencies import Dependencies, open_dependencies
 from maimemo_mcp.mcp_server.health import health_routes
-from maimemo_mcp.mcp_server.tools import markji, memo_content, study
+from maimemo_mcp.mcp_server.tools import composite, feedback, markji, memo_content, study
 from maimemo_mcp.mcp_server.tools.common import Clock, utc_now
 
 SERVER_INSTRUCTIONS = (
@@ -61,6 +61,8 @@ def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
     markji.register(sdk, clock)
     memo_content.register(sdk, clock)
     study.register(sdk, clock)
+    composite.register(sdk, clock)
+    feedback.register(sdk, clock)
     hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "[::1]", "[::1]:*"]
     if settings.mcp_host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
         hosts.extend([settings.mcp_host, f"{settings.mcp_host}:*"])

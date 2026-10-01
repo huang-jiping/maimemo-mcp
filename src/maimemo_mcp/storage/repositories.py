@@ -1,13 +1,13 @@
 """Session-bound persistence; callers own commit/rollback and formal write authority."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from hashlib import blake2b
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -189,6 +189,99 @@ class StudyHistoryRepository:
         self.today_interval = today_interval
         self.records_interval = records_interval
 
+    async def daily_progress(self, day: date, as_of: datetime) -> DailyProgress | None:
+        # This table retains only the latest progress; never expose a future version.
+        return await self.session.scalar(
+            select(DailyProgress).where(
+                DailyProgress.study_date == day,
+                DailyProgress.last_observed_at <= utc_instant(as_of),
+            )
+        )
+
+    async def local_words(self, spelling: str, as_of: datetime) -> list[Vocabulary]:
+        return list(
+            await self.session.scalars(
+                select(Vocabulary)
+                .where(
+                    Vocabulary.normalized_spelling == normalize_spelling(spelling),
+                    Vocabulary.first_seen_at <= utc_instant(as_of),
+                )
+                .order_by(Vocabulary.id)
+            )
+        )
+
+    async def latest_today_words(
+        self, day: date, as_of: datetime
+    ) -> list[tuple[Vocabulary, DailyWordObservation]]:
+        at = utc_instant(as_of)
+        effective = case(
+            (DailyWordObservation.last_observed_at <= at, DailyWordObservation.last_observed_at),
+            else_=DailyWordObservation.first_observed_at,
+        )
+        latest = (
+            select(
+                DailyWordObservation.id,
+                func.row_number()
+                .over(
+                    partition_by=DailyWordObservation.vocabulary_id,
+                    order_by=(effective.desc(), ApiSnapshot.id.desc()),
+                )
+                .label("position"),
+            )
+            .join(ApiSnapshot, DailyWordObservation.source_snapshot_id == ApiSnapshot.id)
+            .join(IngestionRun, ApiSnapshot.ingestion_run_id == IngestionRun.id)
+            .where(
+                DailyWordObservation.study_date == day,
+                DailyWordObservation.first_observed_at <= at,
+                ApiSnapshot.fetched_at <= at,
+                IngestionRun.finished_at <= at,
+                IngestionRun.status.in_(["complete", "partial"]),
+            )
+            .subquery()
+        )
+        rows = await self.session.execute(
+            select(Vocabulary, DailyWordObservation)
+            .join(DailyWordObservation, DailyWordObservation.vocabulary_id == Vocabulary.id)
+            .join(latest, latest.c.id == DailyWordObservation.id)
+            .where(latest.c.position == 1, Vocabulary.first_seen_at <= at)
+            .order_by(Vocabulary.id)
+        )
+        return [(word, observation) for word, observation in rows.all()]
+
+    async def latest_records(self, as_of: datetime) -> list[tuple[Vocabulary, StudyRecordSnapshot]]:
+        at = utc_instant(as_of)
+        effective = case(
+            (StudyRecordSnapshot.observed_at <= at, StudyRecordSnapshot.observed_at),
+            else_=ApiSnapshot.fetched_at,
+        )
+        latest = (
+            select(
+                StudyRecordSnapshot.id,
+                func.row_number()
+                .over(
+                    partition_by=StudyRecordSnapshot.vocabulary_id,
+                    order_by=(effective.desc(), ApiSnapshot.id.desc()),
+                )
+                .label("position"),
+            )
+            .join(ApiSnapshot, StudyRecordSnapshot.source_snapshot_id == ApiSnapshot.id)
+            .join(IngestionRun, ApiSnapshot.ingestion_run_id == IngestionRun.id)
+            .where(
+                ApiSnapshot.fetched_at <= at,
+                IngestionRun.finished_at <= at,
+                IngestionRun.status.in_(["complete", "partial"]),
+            )
+            .subquery()
+        )
+        rows = await self.session.execute(
+            select(Vocabulary, StudyRecordSnapshot)
+            .join(StudyRecordSnapshot, StudyRecordSnapshot.vocabulary_id == Vocabulary.id)
+            .join(latest, latest.c.id == StudyRecordSnapshot.id)
+            .where(latest.c.position == 1, Vocabulary.first_seen_at <= at)
+            .order_by(Vocabulary.id)
+        )
+        return [(word, record) for word, record in rows.all()]
+
     async def weakness_evidence(self, as_of: datetime) -> list[WeaknessEvidence]:
         """Choose visible versions; deduplicated response refreshes are not review events.
 
@@ -332,7 +425,13 @@ class StudyHistoryRepository:
             .on_conflict_do_update(constraint="uq_weakness_score_version", set_=values)
         )
 
-    async def weak_words(self, query: WeakWordQuery, version: str) -> list[WeaknessScore]:
+    async def weak_words(
+        self,
+        query: WeakWordQuery,
+        version: str,
+        *,
+        vocabulary_ids: Sequence[UUID] | None = None,
+    ) -> list[WeaknessScore]:
         # Select latest first: an old high score must not survive a newer low score.
         latest = (
             select(
@@ -358,6 +457,8 @@ class StudyHistoryRepository:
                 WeaknessScore.score >= query.min_score,
             )
         )
+        if vocabulary_ids is not None:
+            statement = statement.where(WeaknessScore.vocabulary_id.in_(vocabulary_ids))
         if query.start is not None:
             statement = statement.where(WeaknessScore.evidence_through >= query.start)
         if query.end is not None:

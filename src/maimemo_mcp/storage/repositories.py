@@ -3,6 +3,7 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from hashlib import blake2b
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from maimemo_mcp.analysis.models import (
     WeaknessResult,
     WeakWordQuery,
 )
+from maimemo_mcp.feedback.models import FeedbackQuery, normalize_spelling
 from maimemo_mcp.ingestion.hashing import stable_payload_hash
 from maimemo_mcp.ingestion.normalizers import (
     SHANGHAI,
@@ -26,7 +28,9 @@ from maimemo_mcp.ingestion.normalizers import (
     utc_instant,
 )
 from maimemo_mcp.ingestion.scheduler import advisory_key
+from maimemo_mcp.maimemo_client.models import Vocabulary as UpstreamVocabulary
 from maimemo_mcp.storage.models.analysis import WeaknessScore
+from maimemo_mcp.storage.models.feedback import LearningFeedbackEvent
 from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
 from maimemo_mcp.storage.models.learning import (
     DailyProgress,
@@ -36,6 +40,120 @@ from maimemo_mcp.storage.models.learning import (
 )
 
 Completeness = Literal["complete", "partial", "stale", "unavailable"]
+
+
+class FeedbackRepository:
+    """Feedback writes only append; callers own the surrounding transaction."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def lock(self, identity: str) -> None:
+        key = int.from_bytes(
+            blake2b(f"feedback:{identity}".encode(), digest_size=8).digest(), "big", signed=True
+        )
+        await self.session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+    async def get(self, identity: UUID) -> LearningFeedbackEvent | None:
+        return await self.session.get(LearningFeedbackEvent, identity)
+
+    async def by_key(self, key: str) -> LearningFeedbackEvent | None:
+        return await self.session.scalar(
+            select(LearningFeedbackEvent).where(LearningFeedbackEvent.idempotency_key == key)
+        )
+
+    async def is_retracted(self, identity: UUID) -> bool:
+        return bool(
+            await self.session.scalar(
+                select(LearningFeedbackEvent.id)
+                .where(
+                    LearningFeedbackEvent.event_type == "RETRACTION",
+                    LearningFeedbackEvent.retracted_event_id == identity,
+                )
+                .limit(1)
+            )
+        )
+
+    async def append(self, **payload: Any) -> LearningFeedbackEvent:
+        identity = await self.session.scalar(
+            insert(LearningFeedbackEvent)
+            .values(id=uuid4(), **payload)
+            .on_conflict_do_nothing(index_elements=[LearningFeedbackEvent.idempotency_key])
+            .returning(LearningFeedbackEvent.id)
+        )
+        event = (
+            await self.get(identity)
+            if identity is not None
+            else await self.by_key(payload["idempotency_key"])
+        )
+        if event is None:
+            raise RuntimeError("Feedback insert produced no retained event")
+        return event
+
+    async def find_word(self, normalized_spelling: str) -> UUID | None:
+        identities = list(
+            await self.session.scalars(
+                select(Vocabulary.id)
+                .where(Vocabulary.normalized_spelling == normalized_spelling)
+                .limit(2)
+            )
+        )
+        # Ambiguous homographs do not earn an arbitrary vocabulary identity.
+        return identities[0] if len(identities) == 1 else None
+
+    async def retain_word(self, word: UpstreamVocabulary) -> UUID | None:
+        await self.session.execute(
+            insert(Vocabulary)
+            .values(
+                id=uuid4(),
+                maimemo_id=word.id,
+                spelling=word.spelling,
+                normalized_spelling=normalize_spelling(word.spelling),
+            )
+            .on_conflict_do_nothing(index_elements=[Vocabulary.maimemo_id])
+        )
+        existing = await self.session.scalar(
+            select(Vocabulary).where(Vocabulary.maimemo_id == word.id)
+        )
+        if existing is None or existing.normalized_spelling != normalize_spelling(word.spelling):
+            return None
+        return existing.id
+
+    async def active(self, query: FeedbackQuery) -> list[LearningFeedbackEvent]:
+        retraction = LearningFeedbackEvent.__table__.alias("retraction")
+        statement = select(LearningFeedbackEvent).where(
+            LearningFeedbackEvent.event_type == "CONFUSION",
+            ~select(retraction.c.id)
+            .where(
+                retraction.c.event_type == "RETRACTION",
+                retraction.c.retracted_event_id == LearningFeedbackEvent.id,
+            )
+            .exists(),
+        )
+        for name in ("direction", "relation_type", "evidence_type"):
+            value = getattr(query, name)
+            if value is not None:
+                statement = statement.where(getattr(LearningFeedbackEvent, name) == value)
+        if query.word_id is not None:
+            statement = statement.where(
+                (LearningFeedbackEvent.word_a_id == query.word_id)
+                | (LearningFeedbackEvent.word_b_id == query.word_id)
+            )
+        statement = statement.order_by(LearningFeedbackEvent.created_at, LearningFeedbackEvent.id)
+        if query.word_spelling is None:
+            return list(await self.session.scalars(statement.limit(query.limit)))
+        matching = normalize_spelling(query.word_spelling)
+        # casefold is Python's Unicode match contract; SQL lower() is not equivalent.
+        results: list[LearningFeedbackEvent] = []
+        async for event in await self.session.stream_scalars(statement):
+            if matching in (
+                normalize_spelling(event.word_a_spelling or ""),
+                normalize_spelling(event.word_b_spelling or ""),
+            ):
+                results.append(event)
+                if len(results) == query.limit:
+                    break
+        return results
 
 
 @dataclass(frozen=True)

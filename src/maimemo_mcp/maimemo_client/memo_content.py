@@ -66,9 +66,13 @@ class MemoContentClient:
 
     async def get_notepad(self, notepad_id: str) -> GetNotepadResponse:
         notepad_id = _STRING_PARAMETER.validate_python(notepad_id, strict=True)
+        # quote leaves unreserved dots intact; HTTP clients normalize whole dot segments.
+        encoded_id = (
+            "%2E" * len(notepad_id) if notepad_id in (".", "..") else quote(notepad_id, safe="")
+        )
         return await self._transport.request(
             "GET",
-            f"/api/v1/memo/notepads/{quote(notepad_id, safe='')}",
+            f"/api/v1/memo/notepads/{encoded_id}",
             response_type=GetNotepadResponse,
         )
 

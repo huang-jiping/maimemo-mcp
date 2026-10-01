@@ -222,3 +222,43 @@ async def test_required_string_parameter_rejected_before_network(
         )
         with pytest.raises(ValidationError):
             await getattr(client, operation)(value)
+
+
+@pytest.mark.parametrize(
+    "notepad_id,encoded_id",
+    [
+        (".", "%2E"),
+        ("..", "%2E%2E"),
+        ("notepad-synthetic", "notepad-synthetic"),
+        ("pad/name", "pad%2Fname"),
+        ("pad name", "pad%20name"),
+        ("词本", "%E8%AF%8D%E6%9C%AC"),
+        ("pad..name", "pad..name"),
+    ],
+)
+async def test_notepad_id_stays_in_endpoint_segment_on_wire(
+    notepad_id: str, encoded_id: str
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=FIXTURES["valid"]["get_notepad"])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MemoContentClient(
+            MaimemoTransport(
+                SecretStr("synthetic-token"),
+                SecretStr("synthetic-key"),
+                NoWaitLimiter(),
+                client=http,
+            )
+        )
+        result = await client.get_notepad(notepad_id)
+    assert result.notepad.id == "notepad-synthetic"
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == (
+        "https://open.maimemo.com/open/api/v1/memo/notepads/" + encoded_id
+    )
+    assert requests[0].url.raw_path == ("/open/api/v1/memo/notepads/" + encoded_id).encode("ascii")

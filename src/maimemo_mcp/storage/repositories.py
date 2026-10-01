@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from maimemo_mcp.analysis.models import (
     DailyEvidence,
     RecentResponse,
+    WeaknessAnalysisState,
     WeaknessEvidence,
     WeaknessResult,
     WeakWordQuery,
@@ -423,6 +424,65 @@ class StudyHistoryRepository:
                 **values,
             )
             .on_conflict_do_update(constraint="uq_weakness_score_version", set_=values)
+        )
+
+    async def weakness_analysis_state(
+        self,
+        as_of: datetime,
+        version: str,
+    ) -> WeaknessAnalysisState:
+        at = utc_instant(as_of)
+        latest = (
+            select(
+                WeaknessScore.id,
+                func.row_number()
+                .over(
+                    partition_by=WeaknessScore.vocabulary_id,
+                    order_by=(WeaknessScore.computed_at.desc(), WeaknessScore.id.desc()),
+                )
+                .label("position"),
+            )
+            .where(
+                WeaknessScore.algorithm_version == version,
+                WeaknessScore.computed_at <= at,
+            )
+            .subquery()
+        )
+        rows = (
+            await self.session.execute(
+                select(
+                    WeaknessScore.vocabulary_id,
+                    WeaknessScore.computed_at,
+                    WeaknessScore.evidence_through,
+                    WeaknessScore.factors,
+                )
+                .join(latest, latest.c.id == WeaknessScore.id)
+                .where(latest.c.position == 1)
+            )
+        ).all()
+        scored = {row.vocabulary_id for row in rows}
+        observed = {word.vocabulary_id for word in await self.weakness_evidence(at)}
+        missing_cutoff = any(row.evidence_through is None for row in rows)
+        quality_codes = tuple(
+            code
+            for code in (
+                "DATA_QUALITY_PARTIAL",
+                "DATA_QUALITY_STALE",
+                "DATA_QUALITY_UNAVAILABLE",
+            )
+            if any(code in row.factors.get("reason_codes", []) for row in rows)
+        )
+        return WeaknessAnalysisState(
+            score_count=len(rows),
+            unscored_word_count=len(observed - scored),
+            oldest_computed_at=min((row.computed_at for row in rows), default=None),
+            data_through=(
+                None
+                if missing_cutoff
+                else min((row.evidence_through for row in rows), default=None)
+            ),
+            missing_cutoff=missing_cutoff,
+            quality_codes=quality_codes,
         )
 
     async def weak_words(

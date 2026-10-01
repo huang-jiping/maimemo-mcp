@@ -383,3 +383,126 @@ async def test_profile_finds_its_score_outside_global_top_thousand(
         assert profile["weakness"]["spelling"] == "Apple"
         assert profile["weakness"]["score"] == 30
         assert await counts(workflow_database) == before
+
+
+async def advance_health_without_analysis(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO ingestion_run(id, task_type, started_at, finished_at, status) "
+                "VALUES(gen_random_uuid(), 'today', :at, :at, 'complete'), "
+                "(gen_random_uuid(), 'records', :at, :at, 'complete')"
+            ),
+            {"at": AT},
+        )
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"min_score": 50},
+        {"start": "2030-10-02T00:00:00Z"},
+        {"end": "2030-09-30T00:00:00Z"},
+    ],
+)
+async def test_empty_weak_filter_keeps_unfiltered_analysis_freshness_and_cutoff(
+    workflow_settings: Settings,
+    workflow_database: AsyncEngine,
+    filters: dict[str, object],
+) -> None:
+    # Old score is 30; current health must not make its filtered absence current analysis.
+    await seed(workflow_database, at=AT - timedelta(days=1), feedback="FAMILIAR")
+    await advance_health_without_analysis(workflow_database)
+    before = await counts(workflow_database)
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool("get_weak_words", {"request": filters})
+        assert result.is_error is False, result.content
+        assert result.structured_content is not None
+        assert result.structured_content["data"]["words"] == []
+        meta = result.structured_content["meta"]
+        assert meta["completeness"] == "partial"
+        assert meta["data_through"] == "2030-10-01"
+        assert meta["warnings"] == ["analysis_outdated"]
+        assert await counts(workflow_database) == before
+
+
+async def test_weak_limit_cannot_hide_an_older_low_score_analysis_source(
+    workflow_settings: Settings,
+    workflow_database: AsyncEngine,
+) -> None:
+    await seed(workflow_database, at=AT - timedelta(days=1), feedback="FAMILIAR")
+    await seed(workflow_database, word="Fresh")
+    async with workflow_database.begin() as connection:
+        await connection.execute(
+            text(
+                "DELETE FROM weakness_score WHERE computed_at = :at AND vocabulary_id IN "
+                "(SELECT id FROM vocabulary WHERE spelling = 'Apple')"
+            ),
+            {"at": AT},
+        )
+    before = await counts(workflow_database)
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool("get_weak_words", {"request": {"limit": 1}})
+        assert result.is_error is False, result.content
+        assert result.structured_content is not None
+        assert [word["spelling"] for word in result.structured_content["data"]["words"]] == [
+            "Fresh"
+        ]
+        meta = result.structured_content["meta"]
+        assert meta["completeness"] == "partial"
+        assert meta["data_through"] == "2030-10-01"
+        assert meta["warnings"] == ["analysis_outdated"]
+        assert await counts(workflow_database) == before
+
+
+@pytest.mark.parametrize("history", [False, True])
+async def test_no_current_algorithm_score_is_missing_analysis_not_complete_empty(
+    workflow_settings: Settings,
+    workflow_database: AsyncEngine,
+    history: bool,
+) -> None:
+    await seed(workflow_database, empty=not history)
+    if history:
+        # Other algorithm versions cannot establish weakness-v1 availability.
+        async with workflow_database.begin() as connection:
+            await connection.execute(text("UPDATE weakness_score SET algorithm_version='older-v0'"))
+    before = await counts(workflow_database)
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool("get_weak_words", {})
+        assert result.is_error is False, result.content
+        assert result.structured_content is not None
+        assert result.structured_content["data"]["words"] == []
+        meta = result.structured_content["meta"]
+        assert meta["completeness"] == "partial"
+        assert meta["data_through"] is None
+        assert meta["warnings"] == ["analysis_unavailable"]
+        assert await counts(workflow_database) == before
+
+
+async def test_weak_analysis_coverage_includes_unscored_words_before_filtering(
+    workflow_settings: Settings,
+    workflow_database: AsyncEngine,
+) -> None:
+    await seed(workflow_database, word="Unscored")
+    await seed(workflow_database, word="Scored")
+    async with workflow_database.begin() as connection:
+        await connection.execute(
+            text(
+                "DELETE FROM weakness_score WHERE vocabulary_id IN "
+                "(SELECT id FROM vocabulary WHERE spelling='Unscored')"
+            )
+        )
+    before = await counts(workflow_database)
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool(
+            "get_weak_words", {"request": {"min_score": 99, "limit": 1}}
+        )
+        assert result.is_error is False, result.content
+        assert result.structured_content is not None
+        assert [word["spelling"] for word in result.structured_content["data"]["words"]] == [
+            "Scored"
+        ]
+        meta = result.structured_content["meta"]
+        assert meta["completeness"] == "partial"
+        assert "analysis_coverage_partial" in meta["warnings"]
+        assert await counts(workflow_database) == before

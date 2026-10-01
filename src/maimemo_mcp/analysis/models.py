@@ -66,6 +66,18 @@ class WeaknessResult:
     reasons: tuple[str, ...] = field(default=())
 
 
+@dataclass(frozen=True)
+class WeaknessAnalysisState:
+    """Latest visible algorithm state before user threshold/range/limit filtering."""
+
+    score_count: int
+    unscored_word_count: int
+    oldest_computed_at: datetime | None
+    data_through: datetime | None
+    missing_cutoff: bool
+    quality_codes: tuple[str, ...]
+
+
 class WeakWordQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

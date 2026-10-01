@@ -10,7 +10,7 @@ from mcp.server.mcpserver import Context
 from mcp_types import ToolAnnotations
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from maimemo_mcp.analysis.models import WeaknessResult, WeakWordQuery
+from maimemo_mcp.analysis.models import WeaknessAnalysisState, WeaknessResult, WeakWordQuery
 from maimemo_mcp.feedback.models import normalize_spelling
 from maimemo_mcp.ingestion.normalizers import SHANGHAI, utc_instant
 from maimemo_mcp.maimemo_client.models import (
@@ -223,6 +223,34 @@ def score_metadata(meta: ToolMeta, words: list[WeakWordView], health: DataHealth
                         meta.completeness = state
 
 
+def analysis_metadata(meta: ToolMeta, state: WeaknessAnalysisState, health: DataHealth) -> None:
+    if state.score_count == 0:
+        meta.data_through = None
+        incomplete(meta, "analysis_unavailable")
+        return
+    if state.unscored_word_count:
+        incomplete(meta, "analysis_coverage_partial")
+    latest_source = max(
+        (task.data_through for task in health.tasks.values() if task.data_through is not None),
+        default=None,
+    )
+    if (
+        latest_source is not None
+        and state.oldest_computed_at is not None
+        and state.oldest_computed_at < latest_source
+    ):
+        incomplete(meta, "analysis_outdated")
+    if state.missing_cutoff:
+        meta.data_through = None
+        incomplete(meta, "analysis_cutoff_unavailable")
+    elif meta.data_through is not None and state.data_through is not None:
+        meta.data_through = min(meta.data_through, state.data_through.astimezone(SHANGHAI).date())
+    for code in state.quality_codes:
+        incomplete(meta, code)
+        if code == "DATA_QUALITY_STALE":
+            meta.completeness = Completeness.STALE
+
+
 def register(server: MCPServer[Dependencies], clock: Clock) -> None:
     @server.tool(annotations=LOCAL_READ)
     async def get_daily_study_dashboard(ctx: ToolContext) -> ToolEnvelope[DashboardView]:
@@ -345,14 +373,10 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         async with deps.sessions() as session:
             repo = StudyHistoryRepository(session)
             health = await repo.get_data_health(query.as_of)
-            evidence = await repo.weakness_evidence(query.as_of)
+        state = await deps.weakness.get_analysis_state(query.as_of)
         words = [weak_view(word) for word in await deps.weakness.list_weak_words(query)]
         meta = local_meta(health, at, analysis=True)
-        if evidence and not await deps.weakness.list_weak_words(
-            WeakWordQuery(as_of=query.as_of, limit=1)
-        ):
-            incomplete(meta, "analysis_unavailable")
-        score_metadata(meta, words, health)
+        analysis_metadata(meta, state, health)
         return ToolEnvelope(data=WeakWordsView(words=words), meta=meta)
 
     @server.tool(annotations=LOCAL_READ)

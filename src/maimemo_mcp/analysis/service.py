@@ -8,7 +8,12 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maimemo_mcp.analysis.models import WeaknessFactor, WeaknessResult, WeakWordQuery
+from maimemo_mcp.analysis.models import (
+    WeaknessAnalysisState,
+    WeaknessFactor,
+    WeaknessResult,
+    WeakWordQuery,
+)
 from maimemo_mcp.analysis.scoring import calculate_weakness
 from maimemo_mcp.ingestion.normalizers import utc_instant
 from maimemo_mcp.storage.repositories import StudyHistoryRepository
@@ -52,6 +57,12 @@ class WeaknessService:
             for word in evidence:
                 await repository.save_weakness(calculate_weakness(word, at, self.version))
             return len(evidence)
+
+    async def get_analysis_state(self, as_of: datetime) -> WeaknessAnalysisState:
+        async with self.session_factory() as session:
+            return await StudyHistoryRepository(session).weakness_analysis_state(
+                as_of, self.version
+            )
 
     async def list_weak_words(
         self,

@@ -1,8 +1,11 @@
 """Nonblocking per-slot ownership, held until formal collection commits."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from time import perf_counter
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -10,8 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from maimemo_mcp.ingestion.normalizers import SHANGHAI, utc_instant
 from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob, advisory_key
 from maimemo_mcp.ingestion.service import IngestionResult, StudyIngestionService
+from maimemo_mcp.logging import log_event
 from maimemo_mcp.storage.models.ingestion import IngestionRun
 from maimemo_mcp.storage.repositories import StudyHistoryRepository
+
+logger = logging.getLogger(__name__)
 
 
 class Worker:
@@ -33,6 +39,32 @@ class Worker:
         self.poll_interval_seconds = poll_interval_seconds
 
     async def run_job(self, job: ScheduledJob, now: datetime) -> IngestionResult:
+        trace_id = uuid4().hex
+        started = perf_counter()
+        try:
+            result = await self._run_job(job, now)
+        except BaseException as exc:
+            log_event(
+                logger,
+                "worker_collection",
+                endpoint=job.identity,
+                latency_ms=(perf_counter() - started) * 1000,
+                status="failed",
+                trace_id=trace_id,
+                error=exc,
+            )
+            raise
+        log_event(
+            logger,
+            "worker_collection",
+            endpoint=job.identity,
+            latency_ms=(perf_counter() - started) * 1000,
+            status=result.status,
+            trace_id=trace_id,
+        )
+        return result
+
+    async def _run_job(self, job: ScheduledJob, now: datetime) -> IngestionResult:
         at = utc_instant(now)
         slot = utc_instant(job.scheduled_at)
         if slot > at:

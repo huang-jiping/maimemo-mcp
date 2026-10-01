@@ -1,0 +1,339 @@
+"""Compare the pinned OpenAPI contract with the public upstream document."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+import urllib.request
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
+
+import yaml
+
+Severity = Literal["none", "informational", "high"]
+HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
+
+
+class SpecReadError(ValueError):
+    """The supplied bytes are not a readable OpenAPI mapping."""
+
+
+@dataclass(frozen=True)
+class DriftChange:
+    severity: Literal["informational", "high"]
+    kind: str
+    operation_id: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class DriftReport:
+    severity: Severity
+    pinned_sha256: str
+    current_sha256: str
+    changes: tuple[DriftChange, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "severity": self.severity,
+            "pinned_sha256": self.pinned_sha256,
+            "current_sha256": self.current_sha256,
+            "changes": [asdict(change) for change in self.changes],
+        }
+
+
+@dataclass(frozen=True)
+class Operation:
+    operation_id: str
+    method: str
+    path: str
+    required_inputs: frozenset[str]
+    optional_inputs: frozenset[str]
+    required_response_fields: frozenset[str]
+    optional_response_fields: frozenset[str]
+
+
+def _mapping(value: object, *, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise SpecReadError(f"{label} must be a mapping")
+    return {str(key): item for key, item in value.items()}
+
+
+def _load(document: bytes) -> Mapping[str, Any]:
+    try:
+        parsed = yaml.safe_load(document)
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise SpecReadError("OpenAPI document is not valid UTF-8 YAML") from exc
+    root = _mapping(parsed, label="OpenAPI document")
+    if not isinstance(root.get("openapi"), str):
+        raise SpecReadError("OpenAPI document has no version")
+    _mapping(root.get("paths"), label="OpenAPI paths")
+    return root
+
+
+def _resolve(root: Mapping[str, Any], schema: object) -> Mapping[str, Any]:
+    value = _mapping(schema, label="schema")
+    reference = value.get("$ref")
+    if reference is None:
+        return value
+    if not isinstance(reference, str) or not reference.startswith("#/"):
+        raise SpecReadError("Only local schema references are supported")
+    target: object = root
+    for part in reference[2:].split("/"):
+        target = _mapping(target, label="referenced schema").get(
+            part.replace("~1", "/").replace("~0", "~")
+        )
+    return _mapping(target, label=f"reference {reference}")
+
+
+def _schema_fields(
+    root: Mapping[str, Any], schema: object, *, prefix: str = "", seen: frozenset[str] = frozenset()
+) -> tuple[set[str], set[str]]:
+    value = _mapping(schema, label="schema")
+    reference = value.get("$ref")
+    if isinstance(reference, str):
+        if reference in seen:
+            return set(), set()
+        seen = seen | {reference}
+        value = _resolve(root, value)
+    required_names = {str(item) for item in value.get("required", [])}
+    properties = _mapping(value.get("properties", {}), label="schema properties")
+    required: set[str] = set()
+    optional: set[str] = set()
+    for name, child in properties.items():
+        qualified = f"{prefix}.{name}" if prefix else name
+        (required if name in required_names else optional).add(qualified)
+        child_required, child_optional = _schema_fields(
+            root, child, prefix=qualified, seen=seen
+        )
+        required.update(child_required)
+        optional.update(child_optional)
+    items = value.get("items")
+    if items is not None:
+        child_required, child_optional = _schema_fields(
+            root, items, prefix=f"{prefix}[]" if prefix else "[]", seen=seen
+        )
+        required.update(child_required)
+        optional.update(child_optional)
+    for branch_name in ("allOf", "oneOf", "anyOf"):
+        branches = value.get(branch_name, [])
+        if isinstance(branches, list):
+            for branch in branches:
+                child_required, child_optional = _schema_fields(
+                    root, branch, prefix=prefix, seen=seen
+                )
+                required.update(child_required)
+                optional.update(child_optional)
+    return required, optional
+
+
+def _request_fields(
+    root: Mapping[str, Any], operation: Mapping[str, Any]
+) -> tuple[set[str], set[str]]:
+    body = operation.get("requestBody")
+    if body is None:
+        return set(), set()
+    body_mapping = _resolve(root, body)
+    content = _mapping(body_mapping.get("content", {}), label="request content")
+    required: set[str] = set()
+    optional: set[str] = set()
+    if body_mapping.get("required") is True:
+        required.add("body")
+    else:
+        optional.add("body")
+    for media in content.values():
+        media_mapping = _mapping(media, label="request media type")
+        schema = media_mapping.get("schema")
+        if schema is not None:
+            found_required, found_optional = _schema_fields(root, schema, prefix="body")
+            required.update(found_required)
+            optional.update(found_optional)
+    return required, optional
+
+
+def _response_fields(
+    root: Mapping[str, Any], operation: Mapping[str, Any]
+) -> tuple[set[str], set[str]]:
+    responses = _mapping(operation.get("responses", {}), label="responses")
+    required: set[str] = set()
+    optional: set[str] = set()
+    for status, response in responses.items():
+        if not status.startswith("2"):
+            continue
+        response_mapping = _resolve(root, response)
+        content = _mapping(response_mapping.get("content", {}), label="response content")
+        for media in content.values():
+            media_mapping = _mapping(media, label="response media type")
+            schema = media_mapping.get("schema")
+            if schema is not None:
+                found_required, found_optional = _schema_fields(root, schema)
+                required.update(found_required)
+                optional.update(found_optional)
+    return required, optional
+
+
+def _operations(root: Mapping[str, Any]) -> dict[str, Operation]:
+    paths = _mapping(root["paths"], label="OpenAPI paths")
+    result: dict[str, Operation] = {}
+    for path, path_item_value in paths.items():
+        path_item = _mapping(path_item_value, label=f"path {path}")
+        inherited = path_item.get("parameters", [])
+        for method, operation_value in path_item.items():
+            if method.lower() not in HTTP_METHODS:
+                continue
+            operation = _mapping(operation_value, label=f"operation {method} {path}")
+            operation_id = operation.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id:
+                operation_id = f"{method.lower()} {path}"
+            if operation_id in result:
+                raise SpecReadError(f"Duplicate operationId: {operation_id}")
+            parameters: list[object] = []
+            for group in (inherited, operation.get("parameters", [])):
+                if not isinstance(group, list):
+                    raise SpecReadError("Operation parameters must be a list")
+                parameters.extend(group)
+            required_inputs = {
+                f"{parameter.get('in', 'unknown')}:{parameter.get('name', 'unknown')}"
+                for item in parameters
+                for parameter in [_resolve(root, item)]
+                if parameter.get("required") is True
+            }
+            optional_inputs = {
+                f"{parameter.get('in', 'unknown')}:{parameter.get('name', 'unknown')}"
+                for item in parameters
+                for parameter in [_resolve(root, item)]
+                if parameter.get("required") is not True
+            }
+            required_body, optional_body = _request_fields(root, operation)
+            required_inputs.update(required_body)
+            optional_inputs.update(optional_body)
+            required_response, optional_response = _response_fields(root, operation)
+            result[operation_id] = Operation(
+                operation_id,
+                method.lower(),
+                path,
+                frozenset(required_inputs),
+                frozenset(optional_inputs),
+                frozenset(required_response),
+                frozenset(optional_response),
+            )
+    return result
+
+
+def _read_only(operation: Operation) -> bool:
+    prefix = operation.operation_id.lower()
+    return operation.method in {"get", "head", "options"} or prefix.startswith(
+        ("get", "list", "query", "search", "read")
+    )
+
+
+def _change(
+    severity: Literal["informational", "high"], kind: str, operation: str, detail: str
+) -> DriftChange:
+    return DriftChange(severity, kind, operation, detail)
+
+
+def compare_openapi(pinned: bytes, current: bytes) -> DriftReport:
+    pinned_operations = _operations(_load(pinned))
+    current_operations = _operations(_load(current))
+    changes: list[DriftChange] = []
+    for operation_id in sorted(pinned_operations.keys() | current_operations.keys()):
+        before = pinned_operations.get(operation_id)
+        after = current_operations.get(operation_id)
+        if before is None:
+            assert after is not None
+            read_only = _read_only(after)
+            changes.append(
+                _change(
+                    "informational" if read_only else "high",
+                    "read_operation_added" if read_only else "operation_added",
+                    operation_id,
+                    f"{after.method.upper()} {after.path}",
+                )
+            )
+            continue
+        if after is None:
+            changes.append(
+                _change(
+                    "high",
+                    "operation_removed",
+                    operation_id,
+                    f"{before.method.upper()} {before.path}",
+                )
+            )
+            continue
+        if before.path != after.path or before.method != after.method:
+            changes.append(
+                _change(
+                    "high",
+                    "operation_path_changed",
+                    operation_id,
+                    f"{before.method.upper()} {before.path} -> {after.method.upper()} {after.path}",
+                )
+            )
+        for field in sorted(after.required_inputs - before.required_inputs):
+            changes.append(_change("high", "required_input_added", operation_id, field))
+        new_optional_inputs = (
+            after.optional_inputs - before.optional_inputs - before.required_inputs
+        )
+        for field in sorted(new_optional_inputs):
+            changes.append(_change("informational", "optional_input_added", operation_id, field))
+        for field in sorted(after.required_response_fields - before.required_response_fields):
+            changes.append(
+                _change("high", "required_response_field_added", operation_id, field)
+            )
+        new_optional = (
+            after.optional_response_fields
+            - before.optional_response_fields
+            - before.required_response_fields
+        )
+        for field in sorted(new_optional):
+            changes.append(
+                _change("informational", "optional_response_field_added", operation_id, field)
+            )
+    severity: Severity = "none"
+    if any(change.severity == "high" for change in changes):
+        severity = "high"
+    elif changes:
+        severity = "informational"
+    return DriftReport(
+        severity,
+        hashlib.sha256(pinned).hexdigest(),
+        hashlib.sha256(current).hexdigest(),
+        tuple(changes),
+    )
+
+
+def _download(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "maimemo-mcp-drift-check/1"})
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
+        return bytes(response.read())
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pinned", required=True)
+    parser.add_argument("--remote", required=True)
+    arguments = parser.parse_args(argv)
+    try:
+        with open(arguments.pinned, "rb") as pinned_file:
+            pinned = pinned_file.read()
+        current = _download(arguments.remote)
+        report = compare_openapi(pinned, current)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {"severity": "unreadable", "error_class": type(exc).__name__},
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(report.as_dict(), ensure_ascii=True, sort_keys=True))
+    return 1 if report.severity == "high" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -133,3 +133,98 @@ class GetCardResponse(ResponseModel):
 
 class QueryFilesResponse(ResponseModel):
     files: list[MarkjiFile]
+
+
+class Interpretation(ResponseModel):
+    id: str
+    interpretation: str
+    tags: list[str]
+    status: Literal["PUBLISHED", "UNPUBLISHED", "DELETED"]
+    created_time: str
+    updated_time: str
+
+
+class Note(ResponseModel):
+    id: str
+    note_type: str
+    note: str
+    status: Literal["PUBLISHED", "DELETED"]
+    created_time: str
+    updated_time: str
+
+
+class BriefNotepad(ResponseModel):
+    id: str
+    type: Literal["FAVORITE", "NOTEPAD"]
+    creator: int
+    status: Literal["PUBLISHED", "UNPUBLISHED", "DELETED"]
+    title: str
+    brief: str
+    tags: list[str]
+    created_time: str
+    updated_time: str
+
+
+class NotepadParsedData(ResponseModel):
+    chapter: str
+    word: str | None = None
+
+
+class NotepadParsedItem(ResponseModel):
+    type: Literal["CHAPTER", "WORD"]
+    data: NotepadParsedData
+
+
+class Notepad(BriefNotepad):
+    content: str
+    list: list[NotepadParsedItem]
+
+
+class PhraseHighlightRange(ResponseModel):
+    start: int
+    end: int
+
+
+class Phrase(ResponseModel):
+    id: str
+    phrase: str
+    interpretation: str
+    tags: list[str]
+    highlight: list[PhraseHighlightRange]
+    status: Literal["PUBLISHED", "DELETED"]
+    created_time: str
+    updated_time: str
+    origin: str
+
+
+class Vocabulary(ResponseModel):
+    id: str
+    spelling: str
+
+
+class InterpretationsResponse(ResponseModel):
+    interpretations: list[Interpretation]
+
+
+class NotesResponse(ResponseModel):
+    notes: list[Note]
+
+
+class ListNotepadsResponse(ResponseModel):
+    notepads: list[BriefNotepad]
+
+
+class GetNotepadResponse(ResponseModel):
+    notepad: Notepad
+
+
+class PhrasesResponse(ResponseModel):
+    phrases: list[Phrase]
+
+
+class VocabularyResponse(ResponseModel):
+    voc: Vocabulary
+
+
+class QueryVocabularyResponse(ResponseModel):
+    voc: list[Vocabulary]

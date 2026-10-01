@@ -1,0 +1,282 @@
+{
+  "valid": {
+    "get_interpretations": {
+      "interpretations": [
+        {
+          "id": "interpretation-synthetic",
+          "interpretation": "n. 苹果",
+          "tags": [
+            "考研"
+          ],
+          "status": "PUBLISHED",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ]
+    },
+    "get_notes": {
+      "notes": [
+        {
+          "id": "note-synthetic",
+          "note_type": "谐音.",
+          "note": "apple",
+          "status": "PUBLISHED",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ]
+    },
+    "list_notepads": {
+      "notepads": [
+        {
+          "id": "notepad-synthetic",
+          "type": "NOTEPAD",
+          "creator": 192,
+          "status": "PUBLISHED",
+          "title": "常用词汇",
+          "brief": "常用",
+          "tags": [
+            "考研"
+          ],
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ]
+    },
+    "get_notepad": {
+      "notepad": {
+        "id": "notepad-synthetic",
+        "type": "NOTEPAD",
+        "creator": 192,
+        "status": "PUBLISHED",
+        "title": "常用词汇",
+        "brief": "常用",
+        "tags": [
+          "考研"
+        ],
+        "created_time": "2023-03-13T16:00:00Z",
+        "updated_time": "2023-03-13T16:00:00Z",
+        "content": "apple",
+        "list": [
+          {
+            "type": "WORD",
+            "data": {
+              "chapter": "我的章节",
+              "word": " Apple "
+            }
+          }
+        ]
+      }
+    },
+    "get_phrases": {
+      "phrases": [
+        {
+          "id": "phrase-synthetic",
+          "phrase": "This is an apple.",
+          "interpretation": "这是一个苹果。",
+          "tags": [
+            "考研"
+          ],
+          "highlight": [
+            {
+              "start": 11,
+              "end": 16
+            }
+          ],
+          "status": "PUBLISHED",
+          "origin": "考研",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ]
+    },
+    "get_vocabulary": {
+      "voc": {
+        "id": "voc-synthetic",
+        "spelling": " Apple "
+      }
+    },
+    "query_vocabulary": {
+      "voc": [
+        {
+          "id": "voc-synthetic",
+          "spelling": " Apple "
+        }
+      ]
+    }
+  },
+  "empty": {
+    "get_interpretations": {
+      "interpretations": []
+    },
+    "get_notes": {
+      "notes": []
+    },
+    "list_notepads": {
+      "notepads": []
+    },
+    "get_notepad": {
+      "notepad": {
+        "id": "notepad-synthetic",
+        "type": "NOTEPAD",
+        "creator": 192,
+        "status": "PUBLISHED",
+        "title": "常用词汇",
+        "brief": "常用",
+        "tags": [],
+        "created_time": "2023-03-13T16:00:00Z",
+        "updated_time": "2023-03-13T16:00:00Z",
+        "content": "",
+        "list": []
+      }
+    },
+    "get_phrases": {
+      "phrases": []
+    },
+    "get_vocabulary": {
+      "voc": {
+        "id": "",
+        "spelling": ""
+      }
+    },
+    "query_vocabulary": {
+      "voc": []
+    }
+  },
+  "unknown_optional": {
+    "get_interpretations": {
+      "interpretations": [
+        {
+          "id": "interpretation-synthetic",
+          "interpretation": "n. 苹果",
+          "tags": [
+            "考研"
+          ],
+          "status": "PUBLISHED",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ],
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "get_notes": {
+      "notes": [
+        {
+          "id": "note-synthetic",
+          "note_type": "谐音.",
+          "note": "apple",
+          "status": "PUBLISHED",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ],
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "list_notepads": {
+      "notepads": [
+        {
+          "id": "notepad-synthetic",
+          "type": "NOTEPAD",
+          "creator": 192,
+          "status": "PUBLISHED",
+          "title": "常用词汇",
+          "brief": "常用",
+          "tags": [
+            "考研"
+          ],
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ],
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "get_notepad": {
+      "notepad": {
+        "id": "notepad-synthetic",
+        "type": "NOTEPAD",
+        "creator": 192,
+        "status": "PUBLISHED",
+        "title": "常用词汇",
+        "brief": "常用",
+        "tags": [
+          "考研"
+        ],
+        "created_time": "2023-03-13T16:00:00Z",
+        "updated_time": "2023-03-13T16:00:00Z",
+        "content": "apple",
+        "list": [
+          {
+            "type": "WORD",
+            "data": {
+              "chapter": "我的章节",
+              "word": " Apple "
+            }
+          }
+        ]
+      },
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "get_phrases": {
+      "phrases": [
+        {
+          "id": "phrase-synthetic",
+          "phrase": "This is an apple.",
+          "interpretation": "这是一个苹果。",
+          "tags": [
+            "考研"
+          ],
+          "highlight": [
+            {
+              "start": 11,
+              "end": 16
+            }
+          ],
+          "status": "PUBLISHED",
+          "origin": "考研",
+          "created_time": "2023-03-13T16:00:00Z",
+          "updated_time": "2023-03-13T16:00:00Z"
+        }
+      ],
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "get_vocabulary": {
+      "voc": {
+        "id": "voc-synthetic",
+        "spelling": " Apple "
+      },
+      "future_optional": {
+        "synthetic": true
+      }
+    },
+    "query_vocabulary": {
+      "voc": [
+        {
+          "id": "voc-synthetic",
+          "spelling": " Apple "
+        }
+      ],
+      "future_optional": {
+        "synthetic": true
+      }
+    }
+  },
+  "missing_required": {
+    "get_interpretations": {},
+    "get_notes": {},
+    "list_notepads": {},
+    "get_notepad": {},
+    "get_phrases": {},
+    "get_vocabulary": {},
+    "query_vocabulary": {}
+  }
+}

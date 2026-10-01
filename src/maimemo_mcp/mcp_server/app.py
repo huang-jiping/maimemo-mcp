@@ -75,5 +75,10 @@ def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
     # Exact paths only: don't issue redirects for tool or public health requests.
     asgi_app.router.redirect_slashes = False
     server = MCPServer(sdk=sdk, asgi_app=asgi_app)
-    asgi_app.routes.extend(health_routes(lambda: server.dependencies))
+    asgi_app.routes.extend(
+        health_routes(
+            lambda: server.dependencies,
+            drift_state_file=settings.openapi_drift_state_file,
+        )
+    )
     return server

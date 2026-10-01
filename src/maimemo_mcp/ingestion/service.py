@@ -50,6 +50,7 @@ class IngestionResult:
     request_count: int
     result_count: int
     warnings: list[str] = field(default_factory=list)
+    error_category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,7 @@ class StudyIngestionService:
                     failure.request_count,
                     0,
                     [failure.error_summary or "collection failed"],
+                    category,
                 )
             return result
 

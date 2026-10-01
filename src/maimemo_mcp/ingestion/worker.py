@@ -61,6 +61,7 @@ class Worker:
             latency_ms=(perf_counter() - started) * 1000,
             status=result.status,
             trace_id=trace_id,
+            error_class=result.error_category,
         )
         return result
 

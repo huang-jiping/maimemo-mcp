@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -90,7 +94,12 @@ def _resolve(root: Mapping[str, Any], schema: object) -> Mapping[str, Any]:
 
 
 def _schema_fields(
-    root: Mapping[str, Any], schema: object, *, prefix: str = "", seen: frozenset[str] = frozenset()
+    root: Mapping[str, Any],
+    schema: object,
+    *,
+    prefix: str = "",
+    ancestor_required: bool = True,
+    seen: frozenset[str] = frozenset(),
 ) -> tuple[set[str], set[str]]:
     value = _mapping(schema, label="schema")
     reference = value.get("$ref")
@@ -105,28 +114,64 @@ def _schema_fields(
     optional: set[str] = set()
     for name, child in properties.items():
         qualified = f"{prefix}.{name}" if prefix else name
-        (required if name in required_names else optional).add(qualified)
+        field_required = ancestor_required and name in required_names
+        (required if field_required else optional).add(qualified)
         child_required, child_optional = _schema_fields(
-            root, child, prefix=qualified, seen=seen
+            root,
+            child,
+            prefix=qualified,
+            ancestor_required=field_required,
+            seen=seen,
         )
         required.update(child_required)
         optional.update(child_optional)
     items = value.get("items")
     if items is not None:
         child_required, child_optional = _schema_fields(
-            root, items, prefix=f"{prefix}[]" if prefix else "[]", seen=seen
+            root,
+            items,
+            prefix=f"{prefix}[]" if prefix else "[]",
+            ancestor_required=ancestor_required,
+            seen=seen,
         )
         required.update(child_required)
         optional.update(child_optional)
-    for branch_name in ("allOf", "oneOf", "anyOf"):
+    all_of = value.get("allOf", [])
+    if isinstance(all_of, list):
+        for branch in all_of:
+            child_required, child_optional = _schema_fields(
+                root,
+                branch,
+                prefix=prefix,
+                ancestor_required=ancestor_required,
+                seen=seen,
+            )
+            required.update(child_required)
+            optional.update(child_optional)
+    for branch_name in ("oneOf", "anyOf"):
         branches = value.get(branch_name, [])
-        if isinstance(branches, list):
-            for branch in branches:
-                child_required, child_optional = _schema_fields(
-                    root, branch, prefix=prefix, seen=seen
-                )
-                required.update(child_required)
-                optional.update(child_optional)
+        if not isinstance(branches, list) or not branches:
+            continue
+        alternatives = [
+            _schema_fields(
+                root,
+                branch,
+                prefix=prefix,
+                ancestor_required=ancestor_required,
+                seen=seen,
+            )
+            for branch in branches
+        ]
+        alternative_required = set.intersection(
+            *(branch_required for branch_required, _ in alternatives)
+        )
+        alternative_fields: set[str] = set()
+        for branch_required, branch_optional in alternatives:
+            alternative_fields.update(branch_required)
+            alternative_fields.update(branch_optional)
+        required.update(alternative_required)
+        optional.update(alternative_fields - alternative_required)
+    optional.difference_update(required)
     return required, optional
 
 
@@ -148,7 +193,12 @@ def _request_fields(
         media_mapping = _mapping(media, label="request media type")
         schema = media_mapping.get("schema")
         if schema is not None:
-            found_required, found_optional = _schema_fields(root, schema, prefix="body")
+            found_required, found_optional = _schema_fields(
+                root,
+                schema,
+                prefix="body",
+                ancestor_required=body_mapping.get("required") is True,
+            )
             required.update(found_required)
             optional.update(found_optional)
     return required, optional
@@ -276,6 +326,10 @@ def compare_openapi(pinned: bytes, current: bytes) -> DriftReport:
             )
         for field in sorted(after.required_inputs - before.required_inputs):
             changes.append(_change("high", "required_input_added", operation_id, field))
+        for field in sorted(before.required_inputs - after.required_inputs):
+            changes.append(
+                _change("high", "required_input_removed_or_relaxed", operation_id, field)
+            )
         new_optional_inputs = (
             after.optional_inputs - before.optional_inputs - before.required_inputs
         )
@@ -284,6 +338,15 @@ def compare_openapi(pinned: bytes, current: bytes) -> DriftReport:
         for field in sorted(after.required_response_fields - before.required_response_fields):
             changes.append(
                 _change("high", "required_response_field_added", operation_id, field)
+            )
+        for field in sorted(before.required_response_fields - after.required_response_fields):
+            changes.append(
+                _change(
+                    "high",
+                    "required_response_field_removed_or_relaxed",
+                    operation_id,
+                    field,
+                )
             )
         new_optional = (
             after.optional_response_fields
@@ -313,16 +376,47 @@ def _download(url: str) -> bytes:
         return bytes(response.read())
 
 
+def _write_state(path: Path, report: DriftReport, checked_at: datetime) -> None:
+    if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+        raise ValueError("Drift check timestamp must be timezone-aware")
+    payload = {
+        "severity": report.severity,
+        "checked_at": checked_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "pinned_sha256": report.pinned_sha256,
+        "current_sha256": report.current_sha256,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pinned", required=True)
     parser.add_argument("--remote", required=True)
+    parser.add_argument(
+        "--state-file",
+        default=os.environ.get("MAIMEMO_OPENAPI_DRIFT_STATE_FILE", "var/openapi-drift.json"),
+    )
     arguments = parser.parse_args(argv)
     try:
         with open(arguments.pinned, "rb") as pinned_file:
             pinned = pinned_file.read()
         current = _download(arguments.remote)
         report = compare_openapi(pinned, current)
+        _write_state(Path(arguments.state_file), report, datetime.now(UTC))
     except Exception as exc:
         print(
             json.dumps(

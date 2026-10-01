@@ -11,7 +11,7 @@ from typing import Any
 
 from maimemo_mcp.config import Settings
 
-_SAFE_TEXT = re.compile(r"^[A-Za-z0-9_./:@-]{1,200}$")
+_SAFE_TEXT = re.compile(r"^[A-Za-z0-9_./:{}@-]{1,200}$")
 _SAFE_EVENT = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _FIELDS = frozenset({"endpoint", "latency_ms", "status", "trace_id", "error_class"})
 
@@ -69,6 +69,7 @@ def log_event(
     status: int | str | None = None,
     trace_id: str | None = None,
     error: BaseException | None = None,
+    error_class: str | None = None,
     **_discarded_sensitive_fields: Any,
 ) -> None:
     """Emit an event while deliberately discarding every non-allowlisted value."""
@@ -78,7 +79,7 @@ def log_event(
         "latency_ms": latency_ms,
         "status": status,
         "trace_id": trace_id,
-        "error_class": type(error).__name__ if error is not None else None,
+        "error_class": error_class or (type(error).__name__ if error is not None else None),
     }
     logger.info(event, extra={"safe_event": event, "safe_fields": fields})
 

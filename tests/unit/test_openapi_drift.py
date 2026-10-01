@@ -151,6 +151,135 @@ def test_new_required_input_and_response_fields_are_high() -> None:
     assert any(change.kind == "required_response_field_added" for change in report.changes)
 
 
+def test_removed_or_relaxed_required_inputs_and_responses_are_high() -> None:
+    pinned = spec(
+        """
+          /api/v1/words:
+            post:
+              operationId: queryWords
+              parameters:
+                - {name: limit, in: query, required: true, schema: {type: integer}}
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      required: [query]
+                      properties: {query: {type: string}}
+              responses:
+                '200':
+                  description: ok
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        required: [items]
+                        properties: {items: {type: array}}
+        """
+    )
+    relaxed = pinned.replace(b"required: true", b"required: false", 1)
+    relaxed = relaxed.replace(b"required: [query]", b"required: []")
+    relaxed = relaxed.replace(b"required: [items]", b"required: []")
+    report = compare_openapi(pinned, relaxed)
+    assert report.severity == "high"
+    assert {change.kind for change in report.changes} >= {
+        "required_input_removed_or_relaxed",
+        "required_response_field_removed_or_relaxed",
+    }
+    assert {change.detail for change in report.changes} >= {
+        "query:limit",
+        "body.query",
+        "items",
+    }
+
+
+def test_optional_parent_does_not_make_required_descendants_globally_required() -> None:
+    current = BASE.replace(
+        b"cursor: {type: string}",
+        b"""cursor: {type: string}
+        metadata:
+          type: object
+          required: [id]
+          properties: {id: {type: string}}
+        annotations:
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties: {id: {type: string}}""",
+    )
+    report = compare_openapi(BASE, current)
+    assert report.severity == "informational"
+    assert not any(change.kind == "required_response_field_added" for change in report.changes)
+    details = {change.detail for change in report.changes}
+    assert {"metadata", "metadata.id", "annotations", "annotations[].id"} <= details
+
+
+def test_all_of_requirements_are_global() -> None:
+    all_of = BASE.replace(
+        b"schema: {$ref: '#/components/schemas/Words'}",
+        b"""schema:
+                    allOf:
+                      - {$ref: '#/components/schemas/Words'}
+                      - type: object
+                        required: [revision]
+                        properties: {revision: {type: integer}}""",
+    )
+    report = compare_openapi(BASE, all_of)
+    assert report.severity == "high"
+    assert any(
+        change.kind == "required_response_field_added" and change.detail == "revision"
+        for change in report.changes
+    )
+
+@pytest.mark.parametrize("branch_keyword", ["oneOf", "anyOf"])
+def test_alternative_branch_requirements_are_not_global(branch_keyword: str) -> None:
+    alternatives = spec(
+        f"""
+          /api/v1/words:
+            get:
+              operationId: getWords
+              responses:
+                '200':
+                  description: ok
+                  content:
+                    application/json:
+                      schema:
+                        {branch_keyword}:
+                          - type: object
+                            required: [kind]
+                            properties: {{kind: {{type: string}}}}
+                          - type: object
+                            required: [kind]
+                            properties: {{kind: {{type: string}}}}
+        """
+    )
+    alternative_branch_tightened = spec(
+        f"""
+          /api/v1/words:
+            get:
+              operationId: getWords
+              responses:
+                '200':
+                  description: ok
+                  content:
+                    application/json:
+                      schema:
+                        {branch_keyword}:
+                          - type: object
+                            required: [kind, alternate]
+                            properties: {{kind: {{type: string}}, alternate: {{type: string}}}}
+                          - type: object
+                            required: [kind]
+                            properties: {{kind: {{type: string}}}}
+        """
+    )
+    report = compare_openapi(alternatives, alternative_branch_tightened)
+    assert report.severity == "informational"
+    assert not any(change.kind == "required_response_field_added" for change in report.changes)
+
+
 @pytest.mark.parametrize(
     ("current", "expected"),
     [
@@ -166,9 +295,50 @@ def test_cli_is_nonzero_only_for_high_or_unreadable_specs(
     expected: int,
 ) -> None:
     pinned = tmp_path / "pinned.yaml"
+    state = tmp_path / "drift-state.json"
     pinned.write_bytes(BASE)
     monkeypatch.setattr(drift, "_download", lambda url: current)
     assert (
-        drift.main(["--pinned", str(pinned), "--remote", "https://example.test/spec"])
+        drift.main(
+            [
+                "--pinned",
+                str(pinned),
+                "--remote",
+                "https://example.test/spec",
+                "--state-file",
+                str(state),
+            ]
+        )
         == expected
     )
+
+
+def test_cli_atomically_persists_safe_latest_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pinned = tmp_path / "pinned.yaml"
+    state = tmp_path / "drift-state.json"
+    pinned.write_bytes(BASE)
+    monkeypatch.setattr(drift, "_download", lambda url: BASE)
+    assert (
+        drift.main(
+            [
+                "--pinned",
+                str(pinned),
+                "--remote",
+                "https://example.test/spec",
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 0
+    )
+    saved = drift.json.loads(state.read_text(encoding="utf-8"))
+    assert saved["severity"] == "none"
+    assert saved["pinned_sha256"] == saved["current_sha256"]
+    assert saved["checked_at"].endswith("Z")
+    assert set(saved) == {"severity", "checked_at", "pinned_sha256", "current_sha256"}
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "drift-state.json",
+        "pinned.yaml",
+    ]

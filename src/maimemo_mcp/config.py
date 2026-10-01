@@ -21,8 +21,11 @@ class Settings(BaseModel):
     today_interval_minutes: int = Field(default=30, gt=0)
     records_interval_minutes: int = Field(default=120, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    openapi_drift_state_file: Path = Path("var/openapi-drift.json")
 
-    @field_validator("token_file", "token_fingerprint_key_file", mode="before")
+    @field_validator(
+        "token_file", "token_fingerprint_key_file", "openapi_drift_state_file", mode="before"
+    )
     @classmethod
     def _nonempty_path(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():

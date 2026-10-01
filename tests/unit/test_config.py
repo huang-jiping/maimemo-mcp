@@ -66,6 +66,7 @@ def test_default_schedule_and_timezone(environ: dict[str, str]) -> None:
     assert settings.today_interval_minutes == 30
     assert settings.records_interval_minutes == 120
     assert settings.log_level == "INFO"
+    assert settings.openapi_drift_state_file == Path("var/openapi-drift.json")
 
 
 def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
@@ -76,6 +77,7 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
         "MAIMEMO_TODAY_INTERVAL_MINUTES": "15",
         "MAIMEMO_RECORDS_INTERVAL_MINUTES": "60",
         "MAIMEMO_LOG_LEVEL": "DEBUG",
+        "MAIMEMO_OPENAPI_DRIFT_STATE_FILE": "runtime/drift.json",
     })
     settings = Settings.load(environ)
     assert settings.timezone.key == "UTC"
@@ -84,6 +86,7 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     assert settings.today_interval_minutes == 15
     assert settings.records_interval_minutes == 60
     assert settings.log_level == "DEBUG"
+    assert settings.openapi_drift_state_file == Path("runtime/drift.json")
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -95,6 +98,7 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     ("MAIMEMO_TODAY_INTERVAL_MINUTES", "0"),
     ("MAIMEMO_RECORDS_INTERVAL_MINUTES", "-1"),
     ("MAIMEMO_LOG_LEVEL", "invalid"),
+    ("MAIMEMO_OPENAPI_DRIFT_STATE_FILE", ""),
 ])
 def test_invalid_configuration(environ: dict[str, str], field: str, value: str) -> None:
     environ[field] = value

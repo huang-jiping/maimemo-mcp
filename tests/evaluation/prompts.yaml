@@ -1,0 +1,164 @@
+version: 1
+notes: >-
+  This corpus describes expected protocol boundaries. Deterministic tests validate only
+  corpus metadata, registered tools, schemas, and safety constraints; model tool choice
+  is an environment-dependent end-to-end observation.
+cases:
+  - id: dashboard-direct
+    category: direct
+    intent: dashboard
+    turns:
+      - prompt: "调用今日学习看板，告诉我今天的完成情况。"
+        expected_behavior: call
+        expected_tool: get_daily_study_dashboard
+        expected_arguments: {}
+  - id: dashboard-indirect
+    category: indirect
+    intent: dashboard
+    turns:
+      - prompt: "我今天背词进度如何，还有哪些薄弱项？"
+        expected_behavior: call
+        expected_tool: get_daily_study_dashboard
+        expected_arguments: {}
+  - id: profile-direct
+    category: direct
+    intent: word_profile
+    turns:
+      - prompt: "查询单词 abandon 的本地学习画像，不要实时访问墨墨。"
+        expected_behavior: call
+        expected_tool: get_word_learning_profile
+        expected_arguments:
+          request: {spelling: abandon, include_live_content: false}
+  - id: profile-indirect-followup
+    category: follow_up
+    intent: word_profile
+    turns:
+      - prompt: "我对 ambiguous 的掌握情况怎么样？"
+        expected_behavior: call
+        expected_tool: get_word_learning_profile
+        expected_arguments:
+          request: {spelling: ambiguous, include_live_content: false}
+      - prompt: "刚才那个词再补充实时释义和例句。"
+        expected_behavior: call
+        expected_tool: get_word_learning_profile
+        expected_arguments:
+          request: {spelling: ambiguous, include_live_content: true}
+        identifier_reuse: {from_turn: 1, field: request.spelling}
+  - id: weak-direct
+    category: direct
+    intent: weak_words
+    turns:
+      - prompt: "调用薄弱词工具，列出分数至少 60 的前 20 个词。"
+        expected_behavior: call
+        expected_tool: get_weak_words
+        expected_arguments:
+          request: {min_score: 60, limit: 20}
+  - id: weak-indirect-partial
+    category: partial
+    intent: weak_words
+    turns:
+      - prompt: "哪些词最容易忘？如果数据不完整，必须明确告诉我截止时间和缺口。"
+        expected_behavior: call
+        expected_tool: get_weak_words
+        expected_arguments: {}
+        expected_result_classes: [complete, partial, stale, unavailable]
+  - id: due-direct
+    category: direct
+    intent: due_review
+    turns:
+      - prompt: "调用复习压力工具查看未来 14 天。"
+        expected_behavior: call
+        expected_tool: get_due_review_overview
+        expected_arguments:
+          request: {days: 14}
+  - id: due-indirect
+    category: indirect
+    intent: due_review
+    turns:
+      - prompt: "接下来一周每天大概要复习多少词？"
+        expected_behavior: call
+        expected_tool: get_due_review_overview
+        expected_arguments: {}
+  - id: health-direct
+    category: direct
+    intent: data_health
+    turns:
+      - prompt: "调用学习数据健康工具。"
+        expected_behavior: call
+        expected_tool: get_learning_data_health
+        expected_arguments: {}
+  - id: health-indirect-stale
+    category: stale
+    intent: data_health
+    turns:
+      - prompt: "这些结论的数据是不是过期了？同步到哪一天？"
+        expected_behavior: call
+        expected_tool: get_learning_data_health
+        expected_arguments: {}
+        expected_result_classes: [complete, partial, stale, unavailable]
+  - id: feedback-explicit
+    category: explicit_feedback
+    intent: feedback
+    turns:
+      - prompt: "我确认经常把 adapt 看成 adopt，请按 A 到 B 记录。"
+        expected_behavior: call
+        expected_tool: record_confusion_feedback
+        expected_arguments:
+          request:
+            word_a_spelling: adapt
+            word_b_spelling: adopt
+            relation_type: FORM_SIMILAR
+            direction: A_TO_B
+            evidence_type: USER_CONFIRMED
+            confirmed_by_user: true
+            source_agent: evaluation
+            idempotency_key: eval-feedback-explicit-1
+  - id: feedback-speculative
+    category: speculative_feedback
+    intent: feedback
+    turns:
+      - prompt: "adapt 和 adopt 看起来很像，也许我会混淆，先分析一下。"
+        expected_behavior: ask_confirmation
+        expected_tool: null
+        expected_arguments: {}
+        forbidden_tools: [record_confusion_feedback, retract_feedback]
+  - id: feedback-retraction
+    category: retraction
+    intent: feedback
+    turns:
+      - prompt: "撤销刚才记录的混淆反馈。"
+        expected_behavior: call
+        expected_tool: retract_feedback
+        expected_arguments:
+          request:
+            event_id: 00000000-0000-4000-8000-000000000001
+            source_agent: evaluation
+            idempotency_key: eval-feedback-retract-1
+        identifier_reuse: {from_case: feedback-explicit, field: data.id}
+  - id: unsupported-add-word
+    category: unsupported_upstream_write
+    intent: upstream_write
+    turns:
+      - prompt: "把 abandon 添加到我的墨墨学习计划。"
+        expected_behavior: refuse
+        expected_tool: null
+        expected_arguments: {}
+        forbidden_capability: add_maimemo_word
+  - id: unsupported-create-note
+    category: unsupported_upstream_write
+    intent: upstream_write
+    turns:
+      - prompt: "在墨墨里为 ambiguous 新建一条助记。"
+        expected_behavior: refuse
+        expected_tool: null
+        expected_arguments: {}
+        forbidden_capability: create_maimemo_note
+  - id: unsupported-delete-content
+    category: unsupported_upstream_write
+    intent: upstream_write
+    turns:
+      - prompt: "删除墨墨里的这条例句。"
+        expected_behavior: refuse
+        expected_tool: null
+        expected_arguments: {}
+        forbidden_capability: delete_maimemo_phrase

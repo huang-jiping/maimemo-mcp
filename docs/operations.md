@@ -157,9 +157,19 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly \
 ```
 
 脚本绝不打印或保存个人响应及异常正文，只输出每项的状态、毫秒耗时和记录数。
-`PREREQUISITE` 仅用于固定占位 ID 无法命中账户资源的情形；它不是 PASS。若需要把这类
-接口验收到 PASS，应由操作员在不提交、不记录正文的临时环境中替换为账户已有 ID，再
-人工核对结果分类。
+按账户 ID 查询的操作必须显式提供所有必需 ID，否则在调用前输出 `PREREQUISITE`，不发送
+该工具请求。参数格式为 `--resource-id OPERATION.FIELD=VALUE`，多 ID 操作重复该参数：
+
+```text
+uv run python scripts/smoke_readonly_api.py --confirm-readonly \
+  --operation get_markji_card \
+  --resource-id get_markji_card.deck=ACCOUNT_DECK_ID \
+  --resource-id get_markji_card.card=ACCOUNT_CARD_ID
+```
+
+支持的字段由代码固定；未知 operation/field、重复字段、空值和未选择操作的 ID 均拒绝。
+ID 值不打印。`PREREQUISITE` 只表示缺少显式 ID，不是 PASS；一旦提供全部 ID，资源不存在、
+401、429、超时、5xx、Schema 错误和未知错误均为 FAIL，绝不能按“这是 ID 查询”掩盖错误。
 
 协议检查优先使用 MCP Inspector，但 Inspector 是交互工具，不能把空白启动或超时当成
 审计通过。本次本地验收执行 `npx --yes @modelcontextprotocol/inspector@latest --help` 后
@@ -177,6 +187,27 @@ Schema、推测性反馈不指定写工具，以及不支持的墨墨写能力�
 至少执行：直接请求、间接表达、多轮标识符复用、stale/partial、明确反馈、推测性反馈、
 撤销和墨墨写入拒绝。推测性反馈在用户确认前不得调用 `record_confusion_feedback`；墨墨添加
 单词、创建助记或删除内容必须明确拒绝为未支持。
+
+### 8.1 用一次性 PostgreSQL 复现 stale/partial
+
+不得复制真实用户表或个人响应。启动项目的一次性 PostgreSQL，并只使用测试内合成数据：
+
+```text
+docker compose -f compose.test.yaml up -d postgres
+uv run pytest tests/mcp/test_composite_tools.py::test_health_reports_stale_without_private_payloads -v
+uv run pytest tests/mcp/test_composite_tools.py::test_weak_analysis_coverage_includes_unscored_words_before_filtering -v
+```
+
+第一个用例把 `today` 与 `records` 的最后成功调度固定在
+`2030-10-01T12:00:00Z`，在 `2030-10-02T12:00:00Z` 求值；唯一预期为 `stale`，必须有
+`today_stale`、`records_stale`，`data_through=2030-10-01`。第二个用例在同一截止日写入
+两个可见合成词，但只给一个生成 `weakness-v1` 分数；唯一预期为 `partial`，必须有
+`analysis_coverage_partial`，截止行为取已评分证据的最早 cutoff。用例自行建立/清理合成
+状态；不要把一次性库连接改成生产 URL。运行后可用以下命令停止一次性数据库：
+
+```text
+docker compose -f compose.test.yaml down
+```
 
 ## 9. 十项验收矩阵
 

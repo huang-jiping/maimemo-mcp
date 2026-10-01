@@ -1,5 +1,8 @@
 """Corpus shape and live MCP schema checks; these do not test model selection."""
 
+import copy
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +22,7 @@ COMPOSITES = {
     "get_due_review_overview": "due_review",
     "get_learning_data_health": "data_health",
 }
+REFERENCE = re.compile(r"^\$\{turn:(\d+):([a-z_.]+)}$")
 
 
 def load_cases() -> list[dict[str, Any]]:
@@ -62,7 +66,6 @@ def test_required_multiturn_and_data_quality_scenarios_are_present() -> None:
         "partial",
         "explicit_feedback",
         "speculative_feedback",
-        "retraction",
         "unsupported_upstream_write",
     } <= categories
     assert any(
@@ -72,6 +75,67 @@ def test_required_multiturn_and_data_quality_scenarios_are_present() -> None:
     )
 
 
+def test_data_quality_scenarios_are_specific_and_reproducible() -> None:
+    by_category = {case["category"]: case for case in load_cases()}
+    expectations = {
+        "partial": ("partial", {"analysis_coverage_partial"}, "oldest_scored_evidence_cutoff"),
+        "stale": (
+            "stale",
+            {"today_stale", "records_stale"},
+            "oldest_required_task_success",
+        ),
+    }
+    for category, (result_class, warnings, cutoff) in expectations.items():
+        turn = by_category[category]["turns"][0]
+        scenario = turn["scenario"]
+        assert scenario["kind"] == "disposable_postgres"
+        assert len(scenario["setup"]) >= 2
+        datetime.fromisoformat(scenario["evaluate_at"].replace("Z", "+00:00"))
+        expected = turn["expected_result"]
+        assert expected["class"] == result_class
+        assert set(expected["required_warnings"]) == warnings
+        assert expected["data_through"] == "2030-10-0" + ("2" if category == "partial" else "1")
+        assert expected["cutoff_behavior"] == cutoff
+
+
+def resolved_arguments(turn: dict[str, Any], turn_number: int) -> dict[str, Any]:
+    arguments = copy.deepcopy(turn["expected_arguments"])
+    reuse = turn.get("identifier_reuse")
+    if reuse is None:
+        return arguments
+    assert set(reuse) == {"from_turn", "result_path", "argument_path"}
+    assert 1 <= reuse["from_turn"] < turn_number
+    assert reuse["result_path"].startswith("data.")
+    target: Any = arguments
+    parts = reuse["argument_path"].split(".")
+    for part in parts[:-1]:
+        target = target[part]
+    placeholder = target[parts[-1]]
+    match = REFERENCE.fullmatch(placeholder)
+    assert match is not None
+    assert int(match.group(1)) == reuse["from_turn"]
+    assert match.group(2) == reuse["result_path"]
+    target[parts[-1]] = (
+        "00000000-0000-4000-8000-000000000001"
+        if reuse["result_path"] == "data.id"
+        else "resolved-spelling"
+    )
+    return arguments
+
+
+def test_identifier_reuse_is_same_case_backward_and_dynamic() -> None:
+    reuse_turns = []
+    for case in load_cases():
+        for number, turn in enumerate(case["turns"], start=1):
+            if "identifier_reuse" in turn:
+                reuse_turns.append((case["id"], number, turn))
+                resolved_arguments(turn, number)
+    assert {(case_id, turn["expected_tool"]) for case_id, _, turn in reuse_turns} == {
+        ("profile-indirect-followup", "get_word_learning_profile"),
+        ("feedback-explicit", "retract_feedback"),
+    }
+
+
 async def test_expected_tools_exist_and_arguments_match_live_schemas(
     evaluation_settings: Settings,
 ) -> None:
@@ -79,14 +143,14 @@ async def test_expected_tools_exist_and_arguments_match_live_schemas(
         registered = {tool.name: tool for tool in (await client.list_tools()).tools}
     assert len(registered) == 24
     for case in load_cases():
-        for turn in case["turns"]:
+        for turn_number, turn in enumerate(case["turns"], start=1):
             tool_name = turn.get("expected_tool")
             if tool_name is None:
                 continue
             assert tool_name in registered, case["id"]
             errors = sorted(
                 Draft202012Validator(registered[tool_name].input_schema).iter_errors(
-                    turn["expected_arguments"]
+                    resolved_arguments(turn, turn_number)
                 ),
                 key=lambda error: list(error.path),
             )

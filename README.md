@@ -54,12 +54,23 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly
 
 脚本采用固定的 17 项 allowlist，不读取 MCP 工具发现结果来执行未来接口；缺少
 `--confirm-readonly`、未知名称或任何写操作都会在调用前失败。可重复使用
-`--operation get_vocabulary` 仅运行指定 allowlist 项。输出只包含操作名、PASS/FAIL 或
-PREREQUISITE、耗时和记录数，不输出或保存响应正文、异常正文及个人数据。
+`--operation get_vocabulary` 仅运行指定 allowlist 项。按账户资源 ID 查询的操作还必须用
+`--resource-id OPERATION.FIELD=VALUE` 显式提供所需 ID；没有 ID 时记录 PREREQUISITE，且
+不会调用该工具。输出只包含操作名、PASS/FAIL 或 PREREQUISITE、耗时、记录数和缺少的固定
+字段名，不输出或保存 ID 值、响应正文、异常正文及个人数据。
 
-部分按 ID 查询的接口使用固定无效占位符，只验证认证、路由和只读调用链；其
-`PREREQUISITE` 表示需要从该账户先取得真实资源 ID，并不表示接口通过。真实冒烟失败时
-不要把终端输出扩展为响应正文日志。
+例如，只有以下参数齐全时才会调用章节读取；参数值不会出现在输出中：
+
+```text
+uv run python scripts/smoke_readonly_api.py --confirm-readonly \
+  --operation get_markji_chapter \
+  --resource-id get_markji_chapter.deck=ACCOUNT_DECK_ID \
+  --resource-id get_markji_chapter.chapter=ACCOUNT_CHAPTER_ID
+```
+
+`PREREQUISITE` 只表示操作员尚未提供该操作要求的真实账户 ID，并不表示接口通过。提供 ID
+后，资源不存在、401、429、超时、服务端错误、Schema 错误和任何未知错误都统一为 FAIL，
+不能降级成 PREREQUISITE。真实冒烟失败时不要把终端输出扩展为响应正文日志。
 
 ## 对话评测
 

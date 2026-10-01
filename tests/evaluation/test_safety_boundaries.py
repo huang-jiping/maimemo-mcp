@@ -77,8 +77,28 @@ def test_smoke_allowlist_is_exact_and_requires_confirmation() -> None:
         smoke.parse_args([])
     with pytest.raises(SystemExit):
         smoke.parse_args(["--confirm-readonly", "--operation", "add_words"])
+    with pytest.raises(SystemExit):
+        smoke.parse_args(
+            ["--confirm-readonly", "--resource-id", "get_markji_deck.unknown=value"]
+        )
     parsed = smoke.parse_args(["--confirm-readonly", "--operation", "get_vocabulary"])
     assert parsed.operations == ("get_vocabulary",)
+    assert parsed.resource_ids == {}
+    parsed = smoke.parse_args(
+        [
+            "--confirm-readonly",
+            "--operation",
+            "get_markji_chapter",
+            "--resource-id",
+            "get_markji_chapter.deck=deck-1",
+            "--resource-id",
+            "get_markji_chapter.chapter=chapter-1",
+        ]
+    )
+    assert parsed.resource_ids == {
+        ("get_markji_chapter", "deck"): "deck-1",
+        ("get_markji_chapter", "chapter"): "chapter-1",
+    }
 
 
 async def test_live_registry_has_exactly_17_atomic_reads_and_no_upstream_write(
@@ -138,7 +158,7 @@ async def test_smoke_output_never_contains_payload_or_error_text(
     monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
     monkeypatch.setattr(smoke, "Client", FakeClient)
     code = await smoke.run(
-        smoke.Arguments(operations=("get_vocabulary", "list_markji_folders"))
+        smoke.Arguments(operations=("get_vocabulary", "list_markji_folders"), resource_ids={})
     )
     output = capsys.readouterr().out
     assert code == 1
@@ -146,3 +166,83 @@ async def test_smoke_output_never_contains_payload_or_error_text(
     assert "personal-payload-secret" not in output
     assert "personal-token" not in output
     assert "upstream-private-body" not in output
+
+
+async def test_missing_account_identifier_is_prerequisite_without_tool_call(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    smoke = load_smoke_module()
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, sdk: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+            calls.append(name)
+            raise AssertionError("missing identifier operation must not call MCP")
+
+    monkeypatch.setattr(smoke.Settings, "load", lambda: object())
+    monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
+    monkeypatch.setattr(smoke, "Client", FakeClient)
+    code = await smoke.run(
+        smoke.Arguments(operations=("get_markji_deck",), resource_ids={})
+    )
+    output = capsys.readouterr().out
+    assert code == 1
+    assert calls == []
+    assert "operation=get_markji_deck status=PREREQUISITE" in output
+    assert "required_fields=deck" in output
+
+
+@pytest.mark.parametrize("failure", ["401", "429", "not_found", "exception"])
+async def test_provided_identifier_failures_are_fail_not_prerequisite(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    smoke = load_smoke_module()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeClient:
+        def __init__(self, sdk: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+            calls.append((name, arguments))
+            if failure == "exception":
+                raise TimeoutError("private upstream body")
+            return SimpleNamespace(
+                is_error=True,
+                structured_content={"private": failure},
+                content=[f"private {failure}"],
+            )
+
+    monkeypatch.setattr(smoke.Settings, "load", lambda: object())
+    monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
+    monkeypatch.setattr(smoke, "Client", FakeClient)
+    code = await smoke.run(
+        smoke.Arguments(
+            operations=("get_markji_deck",),
+            resource_ids={("get_markji_deck", "deck"): "safe-deck-id"},
+        )
+    )
+    output = capsys.readouterr().out
+    assert code == 1
+    assert calls == [("get_markji_deck", {"deck": "safe-deck-id"})]
+    assert "status=FAIL" in output
+    assert "PREREQUISITE" not in output
+    assert failure not in output
+    assert "private upstream body" not in output

@@ -42,8 +42,11 @@ cases:
         expected_behavior: call
         expected_tool: get_word_learning_profile
         expected_arguments:
-          request: {spelling: ambiguous, include_live_content: true}
-        identifier_reuse: {from_turn: 1, field: request.spelling}
+          request: {spelling: "${turn:1:data.spelling}", include_live_content: true}
+        identifier_reuse:
+          from_turn: 1
+          result_path: data.spelling
+          argument_path: request.spelling
   - id: weak-direct
     category: direct
     intent: weak_words
@@ -61,7 +64,17 @@ cases:
         expected_behavior: call
         expected_tool: get_weak_words
         expected_arguments: {}
-        expected_result_classes: [complete, partial, stale, unavailable]
+        scenario:
+          kind: disposable_postgres
+          evaluate_at: "2030-10-02T12:00:00Z"
+          setup:
+            - "写入两个截至 2030-10-02 的可见学习词，其中仅一个有 weakness-v1 分数"
+            - "为 today 与 records 写入 evaluate_at 时刻的 complete ingestion_run"
+        expected_result:
+          class: partial
+          required_warnings: [analysis_coverage_partial]
+          data_through: "2030-10-02"
+          cutoff_behavior: oldest_scored_evidence_cutoff
   - id: due-direct
     category: direct
     intent: due_review
@@ -95,7 +108,17 @@ cases:
         expected_behavior: call
         expected_tool: get_learning_data_health
         expected_arguments: {}
-        expected_result_classes: [complete, partial, stale, unavailable]
+        scenario:
+          kind: disposable_postgres
+          evaluate_at: "2030-10-02T12:00:00Z"
+          setup:
+            - "仅写入 2030-10-01T12:00:00Z 的 today complete ingestion_run"
+            - "仅写入 2030-10-01T12:00:00Z 的 records complete ingestion_run"
+        expected_result:
+          class: stale
+          required_warnings: [today_stale, records_stale]
+          data_through: "2030-10-01"
+          cutoff_behavior: oldest_required_task_success
   - id: feedback-explicit
     category: explicit_feedback
     intent: feedback
@@ -113,6 +136,18 @@ cases:
             confirmed_by_user: true
             source_agent: evaluation
             idempotency_key: eval-feedback-explicit-1
+      - prompt: "撤销刚才记录的混淆反馈。"
+        expected_behavior: call
+        expected_tool: retract_feedback
+        expected_arguments:
+          request:
+            event_id: "${turn:1:data.id}"
+            source_agent: evaluation
+            idempotency_key: eval-feedback-retract-1
+        identifier_reuse:
+          from_turn: 1
+          result_path: data.id
+          argument_path: request.event_id
   - id: feedback-speculative
     category: speculative_feedback
     intent: feedback
@@ -122,19 +157,6 @@ cases:
         expected_tool: null
         expected_arguments: {}
         forbidden_tools: [record_confusion_feedback, retract_feedback]
-  - id: feedback-retraction
-    category: retraction
-    intent: feedback
-    turns:
-      - prompt: "撤销刚才记录的混淆反馈。"
-        expected_behavior: call
-        expected_tool: retract_feedback
-        expected_arguments:
-          request:
-            event_id: 00000000-0000-4000-8000-000000000001
-            source_agent: evaluation
-            idempotency_key: eval-feedback-retract-1
-        identifier_reuse: {from_case: feedback-explicit, field: data.id}
   - id: unsupported-add-word
     category: unsupported_upstream_write
     intent: upstream_write

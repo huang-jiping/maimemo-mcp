@@ -1,5 +1,6 @@
 """One lifespan owns engines and transports; API/services share those dependencies."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -64,6 +65,27 @@ async def open_dependencies(settings: Settings) -> AsyncIterator[Dependencies]:
             weakness=WeaknessService(sessions),
         )
     finally:
-        # SDK task-group cancellation must not interrupt release of owned resources.
-        with anyio.CancelScope(shield=True):
-            await stack.aclose()
+        await _close_stack(stack)
+
+
+async def _close_stack(stack: AsyncExitStack) -> None:
+    # AnyIO shields its own scope cancellation, while asyncio shields native Task.cancel().
+    # Keep the cleanup task alive and awaited even if shutdown receives repeated cancellations.
+    with anyio.CancelScope(shield=True):
+        cleanup = asyncio.create_task(stack.aclose())
+        cancellation: asyncio.CancelledError | None = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as exc:
+                if cleanup.cancelled():
+                    raise
+                cancellation = exc
+            except BaseException as exc:
+                # Cleanup failure takes precedence, retaining any interrupted shutdown as cause.
+                if cancellation is not None:
+                    raise exc from cancellation
+                raise
+        cleanup.result()
+        if cancellation is not None:
+            raise cancellation

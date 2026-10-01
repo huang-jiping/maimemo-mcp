@@ -1,11 +1,13 @@
 """Real SDK/ASGI contracts; only database I/O and upstream network are isolated."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 import httpx2
 import pytest
@@ -253,3 +255,141 @@ def test_app_construction_does_not_read_secret_files_or_open_connections(
     settings.token_fingerprint_key_file.unlink()
     server = create_mcp_app(settings)
     assert server.dependencies is None
+
+
+class BlockingCloseTransport(httpx.AsyncBaseTransport):
+    """Observe the actual client's underlying transport release, not is_closed."""
+
+    def __init__(self, events: list[str], *, fail_close: bool = False) -> None:
+        self.events = events
+        self.fail_close = fail_close
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Cancellation tests must not send upstream requests")
+
+    async def aclose(self) -> None:
+        self.events.append("close-start")
+        self.started.set()
+        await self.release.wait()
+        self.events.append("close-done")
+        if self.fail_close:
+            raise RuntimeError("transport cleanup failed")
+
+
+def install_observable_close(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+    transport: BlockingCloseTransport,
+) -> None:
+    real_client = httpx.AsyncClient
+    real_dispose = AsyncEngine.dispose
+
+    def make_client(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=transport, **kwargs)
+
+    async def dispose(engine: AsyncEngine, close: bool = True) -> None:
+        await real_dispose(engine, close=close)
+        events.append("engine-dispose")
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    monkeypatch.setattr(AsyncEngine, "dispose", dispose)
+
+
+@pytest.mark.parametrize("cancel_count", [1, 3])
+async def test_native_task_cancel_waits_for_underlying_transport_close(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, cancel_count: int
+) -> None:
+    # Cancelling shutdown must finish the transport before engine disposal and propagate cancel.
+    events: list[str] = []
+    transport = BlockingCloseTransport(events)
+    install_observable_close(monkeypatch, events, transport)
+    server = create_mcp_app(settings)
+
+    async def shutdown() -> None:
+        async with server.asgi_app.router.lifespan_context(server.asgi_app):
+            assert server.dependencies is not None
+
+    task = asyncio.create_task(shutdown())
+    try:
+        await asyncio.wait_for(transport.started.wait(), timeout=2)
+        for _ in range(cancel_count):
+            task.cancel()
+            await asyncio.sleep(0)
+        transport.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events == ["close-start", "close-done", "engine-dispose"]
+        assert server.dependencies is None
+    finally:
+        transport.release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_anyio_cancel_waits_for_underlying_transport_close(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Retain the existing AnyIO shield guarantee alongside native asyncio cancellation.
+    events: list[str] = []
+    transport = BlockingCloseTransport(events)
+    install_observable_close(monkeypatch, events, transport)
+    server = create_mcp_app(settings)
+    scopes: list[anyio.CancelScope] = []
+
+    async def shutdown() -> None:
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            async with server.asgi_app.router.lifespan_context(server.asgi_app):
+                assert server.dependencies is not None
+            await anyio.sleep(0)
+        events.append("cancel-delivered" if scope.cancelled_caught else "cancel-lost")
+
+    task = asyncio.create_task(shutdown())
+    try:
+        await asyncio.wait_for(transport.started.wait(), timeout=2)
+        scopes[0].cancel()
+        await asyncio.sleep(0)
+        transport.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert events == ["close-start", "close-done", "engine-dispose", "cancel-delivered"]
+        assert server.dependencies is None
+    finally:
+        transport.release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("cancel_shutdown", [False, True])
+async def test_cleanup_exception_is_preserved_after_all_resources_are_released(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, cancel_shutdown: bool
+) -> None:
+    # An independent cleanup task must not hide its error or skip later exit-stack callbacks.
+    events: list[str] = []
+    transport = BlockingCloseTransport(events, fail_close=True)
+    install_observable_close(monkeypatch, events, transport)
+    server = create_mcp_app(settings)
+
+    async def shutdown() -> None:
+        async with server.asgi_app.router.lifespan_context(server.asgi_app):
+            pass
+
+    task = asyncio.create_task(shutdown())
+    try:
+        await asyncio.wait_for(transport.started.wait(), timeout=2)
+        if cancel_shutdown:
+            task.cancel()
+            await asyncio.sleep(0)
+        transport.release.set()
+        with pytest.raises(RuntimeError, match="transport cleanup failed"):
+            await task
+        assert events == ["close-start", "close-done", "engine-dispose"]
+        assert server.dependencies is None
+    finally:
+        transport.release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

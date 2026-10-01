@@ -50,6 +50,10 @@ def downgrade() -> None:
                 RAISE EXCEPTION '0002 downgrade requires canonical positive integer IDs'
                     USING ERRCODE = '22P02';
             END IF;
+            IF EXISTS (SELECT 1 FROM api_snapshot WHERE observation_kind = 'BASELINE') THEN
+                RAISE EXCEPTION '0002 downgrade cannot preserve BASELINE provenance'
+                    USING ERRCODE = '22P02';
+            END IF;
         END $$;
     """)
     op.drop_constraint(

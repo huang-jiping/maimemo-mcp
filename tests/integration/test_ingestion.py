@@ -3,7 +3,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -13,7 +15,8 @@ from maimemo_mcp.maimemo_client.models import (
     StudyRecordsResponse,
     TodayItemsResponse,
 )
-from maimemo_mcp.maimemo_client.study import StudyRecordsRequest, TodayItemsRequest
+from maimemo_mcp.maimemo_client.study import StudyClient, StudyRecordsRequest, TodayItemsRequest
+from maimemo_mcp.maimemo_client.transport import MaimemoTransport
 from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
 from maimemo_mcp.storage.models.learning import (
     DailyProgress,
@@ -364,7 +367,9 @@ async def test_invalid_record_timestamp_rolls_back_all_count_snapshots(
     assert await counts(collector.session_factory) == [0, 0, 0, 0]
 
 
-async def test_failed_window_count_includes_attempt_in_failed_run(database: AsyncEngine) -> None:
+async def test_fake_client_failure_without_http_send_records_zero_attempts(
+    database: AsyncEngine,
+) -> None:
     class FailingCountStudyFake(StudyFake):
         async def query_records(self, request: StudyRecordsRequest) -> StudyRecordsResponse:
             if request.next_study_date is not None:
@@ -373,10 +378,10 @@ async def test_failed_window_count_includes_attempt_in_failed_run(database: Asyn
 
     collector = service(database, FailingCountStudyFake())
     result = await collector.collect_records(AT)
-    assert result.status == "failed" and result.request_count == 2
+    assert result.status == "failed" and result.request_count == 0
     async with collector.session_factory() as session:
         run = await session.scalar(select(IngestionRun))
-        assert run is not None and run.request_count == 2
+        assert run is not None and run.request_count == 0
 
 
 async def test_service_result_does_not_depend_on_session_commit_expiration(
@@ -384,6 +389,122 @@ async def test_service_result_does_not_depend_on_session_commit_expiration(
 ) -> None:
     collector = StudyIngestionService(async_sessionmaker(database), StudyFake())
     result = await collector.collect_today(AT)
-    assert result.status == "complete" and result.request_count == 2
+    assert result.status == "complete"
     async with collector.session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(IngestionRun)) == 1
+
+
+async def test_record_returning_to_prior_content_refreshes_observed_at(
+    database: AsyncEngine,
+) -> None:
+    fake = StudyFake()
+    fake.rows[0]["last_response"] = "FORGET"
+    collector = service(database, fake)
+    await collector.collect_records(AT)
+    async with collector.session_factory() as session:
+        first = await session.scalar(select(StudyRecordSnapshot))
+        assert first is not None
+        first_source = first.source_snapshot_id
+        raw = await session.get(ApiSnapshot, first_source)
+        assert raw is not None
+        first_payload = raw.raw_response
+    fake.rows[0]["last_response"] = "FAMILIAR"
+    await collector.collect_records(AT + timedelta(minutes=30))
+    fake.rows[0]["last_response"] = "FORGET"
+    await collector.collect_records(AT + timedelta(hours=1))
+    async with collector.session_factory() as session:
+        latest = await session.scalar(
+            select(StudyRecordSnapshot).order_by(StudyRecordSnapshot.observed_at.desc())
+        )
+        assert latest is not None and latest.last_feedback == "FORGET"
+        assert latest.observed_at == AT + timedelta(hours=1)
+        assert latest.source_snapshot_id == first_source
+        raw = await session.get(ApiSnapshot, first_source)
+        assert raw is not None and raw.fetched_at == AT and raw.raw_response == first_payload
+        assert await session.scalar(select(func.count()).select_from(StudyRecordSnapshot)) == 2
+
+
+async def test_identical_records_refresh_observation_without_new_snapshot(
+    database: AsyncEngine,
+) -> None:
+    collector = service(database, StudyFake())
+    await collector.collect_records(AT)
+    first_counts = await counts(collector.session_factory)
+    await collector.collect_records(AT + timedelta(minutes=30))
+    assert await counts(collector.session_factory) == first_counts
+    async with collector.session_factory() as session:
+        row = await session.scalar(select(StudyRecordSnapshot))
+        assert row is not None and row.observed_at == AT + timedelta(minutes=30)
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+async def test_ingestion_counts_actual_http_attempts_with_retry(
+    database: AsyncEngine,
+    exhausted: bool,
+) -> None:
+    class NoWaitLimiter:
+        def __init__(self) -> None:
+            self.acquisitions = 0
+
+        async def acquire(self, fingerprint: str) -> None:
+            self.acquisitions += 1
+
+    attempts = 0
+    limiter = NoWaitLimiter()
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if exhausted or attempts == 1:
+            return httpx.Response(500, text="Bearer synthetic-private-token")
+        if request.url.path.endswith("get_study_progress"):
+            return httpx.Response(
+                200,
+                json={
+                    "progress": {
+                        "finished": 0,
+                        "total": 1,
+                        "study_time": 0,
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "today_items": [
+                    {
+                        "voc_id": "opaque",
+                        "voc_spelling": "apple",
+                        "order": 1,
+                        "is_new": True,
+                        "is_finished": False,
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http_client:
+        client = StudyClient(
+            MaimemoTransport(
+                SecretStr("synthetic-private-token"),
+                SecretStr("synthetic-key"),
+                limiter,
+                client=http_client,
+                sleep=no_sleep,
+            )
+        )
+        collector = StudyIngestionService(
+            async_sessionmaker(database, expire_on_commit=False), client
+        )
+        result = await collector.collect_today(AT)
+    assert result.status == ("failed" if exhausted else "complete")
+    assert attempts == 3 and limiter.acquisitions == 3
+    assert result.request_count == 3
+    async with collector.session_factory() as session:
+        run = await session.scalar(select(IngestionRun))
+        assert run is not None and run.request_count == 3
+        assert "synthetic-private-token" not in str(run.error_summary)
+    assert "synthetic-private-token" not in str(result.warnings)

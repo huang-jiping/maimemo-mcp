@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import hmac
 import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol, TypeVar
@@ -24,6 +27,42 @@ from maimemo_mcp.maimemo_client.rate_limit import utc_now
 
 T = TypeVar("T", bound=BaseModel)
 BASE_URL = "https://open.maimemo.com/open"
+
+
+@dataclass
+class HttpAttemptObservation:
+    """Only a counter; ownership prevents copied child contexts mutating their parent."""
+
+    count: int = 0
+    _owner_task_id: int = field(default=0, repr=False)
+    _active: bool = field(default=True, repr=False)
+
+
+_attempt_observation: ContextVar[HttpAttemptObservation | None] = ContextVar(
+    "maimemo_http_attempt_observation",
+    default=None,
+)
+
+
+@contextmanager
+def observe_http_attempts() -> Iterator[HttpAttemptObservation]:
+    observation = HttpAttemptObservation(_owner_task_id=id(asyncio.current_task()))
+    token = _attempt_observation.set(observation)
+    try:
+        yield observation
+    finally:
+        observation._active = False
+        _attempt_observation.reset(token)
+
+
+def _observe_send() -> None:
+    observation = _attempt_observation.get()
+    if (
+        observation is not None
+        and observation._active
+        and observation._owner_task_id == id(asyncio.current_task())
+    ):
+        observation.count += 1
 
 
 class Limiter(Protocol):
@@ -109,14 +148,15 @@ class MaimemoTransport:
             await self._limiter.acquire(self._fingerprint)
             response = None
             try:
-                response = await self._client.request(
+                request = self._client.build_request(
                     method,
                     BASE_URL + path,
                     params=params,
                     json=json,
                     headers={"Authorization": f"Bearer {self._token.get_secret_value()}"},
-                    follow_redirects=False,
                 )
+                _observe_send()
+                response = await self._client.send(request, follow_redirects=False)
             except httpx.TransportError:
                 pass
             # Raise only outside exception handlers: no sensitive exception context.

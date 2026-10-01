@@ -169,25 +169,31 @@ class StudyHistoryRepository:
         unique = {row.maimemo_id: row for row in rows}
         if not unique:
             return
+        statement = insert(StudyRecordSnapshot).values(
+            [
+                {
+                    "id": uuid4(),
+                    "vocabulary_id": words[row.maimemo_id],
+                    "observed_at": row.observed_at,
+                    "added_at": row.added_at,
+                    "first_studied_at": row.first_studied_at,
+                    "last_studied_at": row.last_studied_at,
+                    "next_study_at": row.next_study_at,
+                    "last_feedback": row.last_feedback,
+                    "study_count": row.study_count,
+                    "tags": row.tags,
+                    "source_snapshot_id": snapshot_id,
+                }
+                for row in unique.values()
+            ]
+        )
         await self.session.execute(
-            insert(StudyRecordSnapshot)
-            .values(
-                [
-                    {
-                        "id": uuid4(),
-                        "vocabulary_id": words[row.maimemo_id],
-                        "observed_at": row.observed_at,
-                        "added_at": row.added_at,
-                        "first_studied_at": row.first_studied_at,
-                        "last_studied_at": row.last_studied_at,
-                        "next_study_at": row.next_study_at,
-                        "last_feedback": row.last_feedback,
-                        "study_count": row.study_count,
-                        "tags": row.tags,
-                        "source_snapshot_id": snapshot_id,
-                    }
-                    for row in unique.values()
-                ]
+            statement.on_conflict_do_update(
+                constraint="uq_study_record_snapshot_source",
+                set_={
+                    "observed_at": func.greatest(
+                        StudyRecordSnapshot.observed_at, statement.excluded.observed_at
+                    )
+                },
             )
-            .on_conflict_do_nothing(constraint="uq_study_record_snapshot_source")
         )

@@ -93,9 +93,11 @@ async def test_migration_and_orm_have_no_schema_drift(database: AsyncEngine) -> 
         assert differences == []
 
 
+@pytest.mark.parametrize("with_observation", [False, True])
 async def test_0002_round_trip_preserves_compatible_vocabulary(
     database: AsyncEngine,
     alembic_config: Config,
+    with_observation: bool,
 ) -> None:
     identity = uuid4()
     async with database.begin() as connection:
@@ -106,6 +108,24 @@ async def test_0002_round_trip_preserves_compatible_vocabulary(
             ),
             {"id": identity},
         )
+        if with_observation:
+            run_id = uuid4()
+            await connection.execute(
+                text(
+                    "INSERT INTO ingestion_run (id, task_type, status) "
+                    "VALUES (:id, 'today', 'complete')"
+                ),
+                {"id": run_id},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO api_snapshot (id, endpoint, request_hash, content_hash, "
+                    "raw_response, ingestion_run_id, observation_kind) "
+                    "VALUES (:id, 'today', 'request', 'content', '{\"preserved\": true}'::jsonb, "
+                    ":run, 'OBSERVATION')"
+                ),
+                {"id": uuid4(), "run": run_id},
+            )
     await asyncio.to_thread(command.downgrade, alembic_config, "0001")
     async with database.connect() as connection:
         assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == 123
@@ -113,6 +133,13 @@ async def test_0002_round_trip_preserves_compatible_vocabulary(
     async with database.connect() as connection:
         assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == "123"
         assert await connection.scalar(text("SELECT id FROM vocabulary")) == identity
+        if with_observation:
+            assert await connection.scalar(text("SELECT observation_kind FROM api_snapshot")) == (
+                "OBSERVATION"
+            )
+            assert await connection.scalar(text("SELECT raw_response FROM api_snapshot")) == {
+                "preserved": True,
+            }
 
 
 @pytest.mark.parametrize("upstream_id", ["opaque", "007"])
@@ -133,4 +160,50 @@ async def test_0002_downgrade_rejects_incompatible_ids_without_deleting_data(
         await asyncio.to_thread(command.downgrade, alembic_config, "0001")
     async with database.connect() as connection:
         assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == upstream_id
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002"
+
+
+async def test_0002_downgrade_rejects_baseline_without_losing_provenance(
+    database: AsyncEngine,
+    alembic_config: Config,
+) -> None:
+    run_id, snapshot_id, word_id = uuid4(), uuid4(), uuid4()
+    async with database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO vocabulary (id, maimemo_id, normalized_spelling, spelling) "
+                "VALUES (:id, '123', 'apple', 'Apple')"
+            ),
+            {"id": word_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO ingestion_run (id, task_type, status) "
+                "VALUES (:id, 'today', 'complete')"
+            ),
+            {"id": run_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO api_snapshot (id, endpoint, request_hash, content_hash, "
+                "raw_response, ingestion_run_id, observation_kind) "
+                "VALUES (:id, 'today', 'request', 'content', '{}'::jsonb, :run, 'BASELINE')"
+            ),
+            {"id": snapshot_id, "run": run_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO daily_word_observation "
+                "(id, study_date, vocabulary_id, source_snapshot_id) "
+                "VALUES (:id, '2026-10-02', :word, :snapshot)"
+            ),
+            {"id": uuid4(), "word": word_id, "snapshot": snapshot_id},
+        )
+    with pytest.raises(DataError):
+        await asyncio.to_thread(command.downgrade, alembic_config, "0001")
+    async with database.connect() as connection:
+        assert (
+            await connection.scalar(text("SELECT observation_kind FROM api_snapshot")) == "BASELINE"
+        )
+        assert await connection.scalar(text("SELECT count(*) FROM daily_word_observation")) == 1
         assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002"

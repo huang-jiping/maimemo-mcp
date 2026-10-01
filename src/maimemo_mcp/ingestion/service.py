@@ -26,6 +26,7 @@ from maimemo_mcp.maimemo_client.study import (
     StudyRecordsRequest,
     TodayItemsRequest,
 )
+from maimemo_mcp.maimemo_client.transport import HttpAttemptObservation, observe_http_attempts
 from maimemo_mcp.storage.models.ingestion import IngestionRun
 from maimemo_mcp.storage.models.learning import DailyProgress
 from maimemo_mcp.storage.repositories import StudyHistoryRepository
@@ -71,9 +72,8 @@ class StudyRecordWindow:
 class StudyRecordWindowPlanner:
     """Split at Shanghai midnights, respecting inclusive microsecond-resolution bounds."""
 
-    def __init__(self, client: StudyReads, *, on_request: Callable[[], None] | None = None) -> None:
+    def __init__(self, client: StudyReads) -> None:
         self.client = client
-        self.on_request = on_request
         self.responses: list[tuple[StudyRecordsRequest, StudyRecordsResponse]] = []
         self.warnings: list[str] = []
 
@@ -87,8 +87,6 @@ class StudyRecordWindowPlanner:
 
     async def _split(self, start: datetime, end: datetime) -> list[StudyRecordWindow]:
         request = StudyRecordWindow(start, end, 0).request(as_count=True)
-        if self.on_request is not None:
-            self.on_request()
         response = await self.client.query_records(request)
         self.responses.append((request, response))
         count = response.count
@@ -137,6 +135,18 @@ class StudyIngestionService:
             [StudyHistoryRepository, IngestionRun, datetime], Awaitable[tuple[int, list[str]]]
         ],
     ) -> IngestionResult:
+        with observe_http_attempts() as attempts:
+            return await self._collect_observed(task, observed_at, action, attempts)
+
+    async def _collect_observed(
+        self,
+        task: str,
+        observed_at: datetime,
+        action: Callable[
+            [StudyHistoryRepository, IngestionRun, datetime], Awaitable[tuple[int, list[str]]]
+        ],
+        attempts: HttpAttemptObservation,
+    ) -> IngestionResult:
         at = utc_instant(observed_at)
         run = IngestionRun(
             task_type=task, started_at=at, status="running", request_count=0, result_count=0
@@ -148,6 +158,7 @@ class StudyIngestionService:
                 session.add(run)
                 await session.flush()
                 result_count, warnings = await action(StudyHistoryRepository(session), run, at)
+                run.request_count = attempts.count
                 run.result_count = result_count
                 run.status = "partial" if warnings else "complete"
                 run.error_category = "incomplete" if warnings else None
@@ -169,7 +180,7 @@ class StudyIngestionService:
                 started_at=at,
                 finished_at=max(datetime.now(UTC), at),
                 status="failed",
-                request_count=run.request_count,
+                request_count=attempts.count,
                 result_count=0,
                 error_category=category,
                 error_summary=f"{category} failed; inspect sanitized operational diagnostics",
@@ -192,7 +203,6 @@ class StudyIngestionService:
         run: IngestionRun,
         at: datetime,
     ) -> tuple[int, list[str]]:
-        run.request_count += 1
         progress_response = await self.client.get_progress()
         progress = normalize_daily_progress(progress_response, at)
         # Date context is part of the formal request identity; identical consecutive days
@@ -202,7 +212,6 @@ class StudyIngestionService:
             PROGRESS, context, progress_response.model_dump(exclude_unset=True), at, run.id
         )
         request = TodayItemsRequest(limit=1000)
-        run.request_count += 1
         response = await self.client.get_today_items(request)
         snapshot = await repo.snapshot(
             TODAY,
@@ -240,7 +249,6 @@ class StudyIngestionService:
         at: datetime,
     ) -> tuple[int, list[str]]:
         request = StudyRecordsRequest(as_count=True)
-        run.request_count += 1
         total = await self.client.query_records(request)
         if total.count < 0:
             raise ValueError("Invalid total count")
@@ -252,10 +260,7 @@ class StudyIngestionService:
             run.id,
         )
 
-        def on_window_request() -> None:
-            run.request_count += 1
-
-        planner = StudyRecordWindowPlanner(self.client, on_request=on_window_request)
+        planner = StudyRecordWindowPlanner(self.client)
         windows = await planner.plan(self.records_range_start, self.records_range_end)
         for count_request, count_response in planner.responses:
             await repo.snapshot(
@@ -269,7 +274,6 @@ class StudyIngestionService:
         seen: set[str] = set()
 
         async def save_rows(row_request: StudyRecordsRequest) -> int:
-            run.request_count += 1
             response = await self.client.query_records(row_request)
             snapshot = await repo.snapshot(
                 RECORDS,

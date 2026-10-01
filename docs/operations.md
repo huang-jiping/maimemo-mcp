@@ -7,8 +7,23 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
 ## 1. 部署前准备
 
 1. 为应用创建独立、最小权限的 PostgreSQL 用户和数据库，不复用管理员账号。
-2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建两个仅管理员可读的文件：
-   `maimemo_token` 与随机生成的 `token_fingerprint_key`。文件只放值本身，可有一个末尾换行。
+2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建 `maimemo_token` 与随机生成的
+   `token_fingerprint_key`。文件只放值本身，可有一个末尾换行。应用容器固定以
+   UID/GID 10001 运行，因此 Linux NAS 上应让源文件归 10001 所有且仅 owner 可读：
+
+   ```text
+   sudo chown 10001:10001 secrets/maimemo_token secrets/token_fingerprint_key
+   sudo chmod 0400 secrets/maimemo_token secrets/token_fingerprint_key
+   ```
+
+   如果 NAS 使用管理界面 ACL，必须给数字用户 10001（或映射到 GID 10001 的组）仅读取
+   权限并拒绝写入，同时移除其他非管理员主体的访问权限。root/平台管理员仍可管理文件，
+   但不能把源文件保留为只有 root:root 0400 可读，否则容器会收到 `PermissionError`。
+
+   Docker 官方说明 Compose 的 file-source secret 是单文件 bind mount，`uid`、`gid`、
+   `mode` 对这种来源会被静默忽略；本项目因此不在 Compose 中伪装设置这些字段，访问权限
+   必须在 NAS 源文件 owner/group/ACL 上落实：
+   <https://docs.docker.com/reference/compose-file/services/#secrets>。
 3. 创建 `var/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器以只读方式挂载。
 4. 设置 `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
    `postgresql+psycopg://user:password@host:5432/database` 形式。
@@ -21,10 +36,18 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
 ```text
 docker compose config
 docker compose build --pull
+python scripts/check_compose_secrets.py \
+  --token-file ./secrets/maimemo_token \
+  --fingerprint-key-file ./secrets/token_fingerprint_key \
+  --image maimemo-mcp:local
 docker compose run --rm --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
 docker compose up -d
 docker compose ps
 ```
+
+secret 审计通过真实 `docker compose run` 以 UID 10001 读取两份挂载，并逐一确认写入失败；
+它只输出计数和 UID，不输出 secret 内容。`--synthetic --image maimemo-mcp:test` 可用于不接触
+真实 secret 的 Docker 引擎自检，但不能替代生产源文件 owner/ACL 检查。
 
 镜像使用固定 digest 的 Python 3.12 基础镜像、锁定的 `uv.lock` 和
 `uv sync --frozen --no-dev`。运行用户为 UID/GID 10001，根文件系统只读，移除全部 Linux
@@ -34,7 +57,9 @@ capabilities。`restart: unless-stopped` 只负责进程意外退出后的重启
 
 `maimemo-private` 是未发布端口的 Compose bridge。不能设为 Docker `internal: true`，否则
 会阻断墨墨 API 的必要出站连接。默认只有同一 Docker 网络内的进程可访问
-`http://maimemo-mcp:8000/mcp`。
+`http://maimemo-mcp:8000/mcp`。Compose 显式把唯一内部 DNS 名 `maimemo-mcp` 加入
+`MAIMEMO_MCP_ALLOWED_HOSTS`；服务端只为该精确名字及其端口形式扩展 Host allowlist，其他
+Host 仍被 DNS rebinding 防护拒绝。非 Compose 部署默认不增加任何内部 Host。
 
 健康检查：
 
@@ -61,7 +86,8 @@ services:
 然后使用两份 Compose 文件启动，并让 Tunnel Client 连接
 `http://127.0.0.1:8000/mcp`。不得改成 `0.0.0.0:8000:8000`。若 Tunnel Client 在同一
 Docker 网络内，可直接使用 `http://maimemo-mcp:8000/mcp`，但镜像与版本必须先按
-`docs/tunnel-setup.md` 核验。
+`docs/tunnel-setup.md` 核验。该 DNS 名由 Compose 显式 allowlist 放行；不要通过通配符扩大
+Host 范围。
 
 ## 4. PostgreSQL 备份
 
@@ -100,9 +126,11 @@ python scripts/restore_postgres.py \
 ```
 
 脚本在恢复后验证关键表集合、非空 snapshot hash、反馈撤销链接，以及
-`alembic_version` 与 `schema_metadata` 都处于当前迁移头 `0003`。随后仍要用只读 SQL 核对各表行数和
-抽样 hash；演练验收完成后，由数据库管理员明确点名删除该 disposable 数据库。脚本不会
-自动删除或改写源库、用户库或已有目标。
+`alembic_version` 与 `schema_metadata` 都处于当前迁移头 `0003`。随后仍要用只读 SQL 核对
+各表行数和抽样 hash。若 `pg_restore` 或一致性校验失败，脚本只会自动 `dropdb` 本进程刚
+创建、且已通过 disposable 名称和二次确认校验的精确目标；清理失败时保留原始错误并附加
+人工清理提示。成功的演练库不会自动删除，验收完成后由数据库管理员明确点名删除。脚本
+不会删除或改写源库、用户库或任何已有目标。
 
 ## 6. 升级与回滚
 

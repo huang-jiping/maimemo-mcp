@@ -50,7 +50,7 @@ def _validate_target(target: str, confirmation: str, admin_database: str) -> Non
     if target != confirmation:
         raise ValueError("Disposable target confirmation must exactly match target database")
     if not _DISPOSABLE_DATABASE.fullmatch(target):
-        raise ValueError("Target must match maimemo_restore_[a-z0-9_]{8,63}")
+        raise ValueError("Target must match maimemo_restore_[a-z0-9_]{8,47}")
     if target == admin_database:
         raise ValueError("Restore target cannot be the maintenance database")
 
@@ -101,6 +101,54 @@ SELECT (SELECT version_num FROM alembic_version) = '{_EXPECTED_ALEMBIC_REVISION}
         raise RuntimeError("Restored database failed critical integrity validation")
 
 
+def _restore_new_database(
+    tools: PostgresTools,
+    admin_url: URL,
+    target: str,
+    backup: Path,
+) -> None:
+    admin_dsn, admin_environment = tools.database_argument(admin_url)
+    owner_arguments = ["--owner", admin_url.username] if admin_url.username else []
+    created = False
+    try:
+        tools.run(
+            "createdb",
+            ["--maintenance-db", admin_dsn, *owner_arguments, target],
+            env=admin_environment,
+        )
+        created = True
+        target_url = admin_url.set(database=target)
+        target_dsn, target_environment = tools.database_argument(target_url)
+        with backup.open("rb") as stream:
+            tools.run(
+                "pg_restore",
+                [
+                    "--exit-on-error",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--dbname",
+                    target_dsn,
+                ],
+                stdin=stream,
+                env=target_environment,
+            )
+        _validate_restored_database(tools, target_url)
+    except BaseException as primary:
+        if created:
+            try:
+                tools.run(
+                    "dropdb",
+                    ["--maintenance-db", admin_dsn, "--force", "--if-exists", target],
+                    env=admin_environment,
+                )
+            except BaseException as cleanup_error:
+                primary.add_note(
+                    "Disposable restore cleanup failed with "
+                    f"{type(cleanup_error).__name__}; manual cleanup is required"
+                )
+        raise
+
+
 def main() -> int:
     args = parser().parse_args()
     backup = resolved_dump_input(args.backup)
@@ -108,7 +156,7 @@ def main() -> int:
     assert admin_url.database is not None
     _validate_target(args.target_database, args.confirm_disposable_target, admin_url.database)
     tools = PostgresTools(args.pg_bin_dir, args.docker_container)
-    tools.validate("psql", "createdb", "pg_restore")
+    tools.validate("psql", "createdb", "pg_restore", "dropdb")
 
     escaped_target = args.target_database.replace("'", "''")
     exists = _query(
@@ -119,29 +167,7 @@ def main() -> int:
     if exists:
         raise RuntimeError("Refusing to restore into an existing database")
 
-    admin_dsn, admin_environment = tools.database_argument(admin_url)
-    owner_arguments = ["--owner", admin_url.username] if admin_url.username else []
-    tools.run(
-        "createdb",
-        ["--maintenance-db", admin_dsn, *owner_arguments, args.target_database],
-        env=admin_environment,
-    )
-    target_url = admin_url.set(database=args.target_database)
-    target_dsn, target_environment = tools.database_argument(target_url)
-    with backup.open("rb") as stream:
-        tools.run(
-            "pg_restore",
-            [
-                "--exit-on-error",
-                "--no-owner",
-                "--no-privileges",
-                "--dbname",
-                target_dsn,
-            ],
-            stdin=stream,
-            env=target_environment,
-        )
-    _validate_restored_database(tools, target_url)
+    _restore_new_database(tools, admin_url, args.target_database, backup)
     print(f"Restore validated in disposable database: {args.target_database}")
     return 0
 

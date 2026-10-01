@@ -63,6 +63,7 @@ def test_default_schedule_and_timezone(environ: dict[str, str]) -> None:
     assert settings.timezone.key == "Asia/Shanghai"
     assert settings.mcp_host == "0.0.0.0"
     assert settings.mcp_port == 8000
+    assert settings.mcp_allowed_hosts == ()
     assert settings.today_interval_minutes == 30
     assert settings.records_interval_minutes == 120
     assert settings.log_level == "INFO"
@@ -74,6 +75,7 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
         "MAIMEMO_TIMEZONE": "UTC",
         "MAIMEMO_MCP_HOST": "127.0.0.1",
         "MAIMEMO_MCP_PORT": "9000",
+        "MAIMEMO_MCP_ALLOWED_HOSTS": "maimemo-mcp, tunnel-sidecar",
         "MAIMEMO_TODAY_INTERVAL_MINUTES": "15",
         "MAIMEMO_RECORDS_INTERVAL_MINUTES": "60",
         "MAIMEMO_LOG_LEVEL": "DEBUG",
@@ -83,6 +85,7 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     assert settings.timezone.key == "UTC"
     assert settings.mcp_host == "127.0.0.1"
     assert settings.mcp_port == 9000
+    assert settings.mcp_allowed_hosts == ("maimemo-mcp", "tunnel-sidecar")
     assert settings.today_interval_minutes == 15
     assert settings.records_interval_minutes == 60
     assert settings.log_level == "DEBUG"
@@ -95,6 +98,8 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     ("MAIMEMO_TIMEZONE", "Invalid/Zone"),
     ("MAIMEMO_MCP_PORT", "0"),
     ("MAIMEMO_MCP_PORT", "65536"),
+    ("MAIMEMO_MCP_ALLOWED_HOSTS", "maimemo-mcp,*.internal"),
+    ("MAIMEMO_MCP_ALLOWED_HOSTS", "maimemo-mcp:8000"),
     ("MAIMEMO_TODAY_INTERVAL_MINUTES", "0"),
     ("MAIMEMO_RECORDS_INTERVAL_MINUTES", "-1"),
     ("MAIMEMO_LOG_LEVEL", "invalid"),

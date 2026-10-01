@@ -327,4 +327,46 @@ def test_restore_rejects_target_that_postgres_would_truncate(tmp_path: Path) -> 
             env=env,
         )
 
-    assert "Target must match maimemo_restore_" in caught.value.stderr
+    assert (
+        "Target must match maimemo_restore_[a-z0-9_]{8,47}" in caught.value.stderr
+    )
+
+
+def test_failed_restore_removes_only_its_new_disposable_database(tmp_path: Path) -> None:
+    container = _postgres_container()
+    target = f"maimemo_restore_{uuid4().hex}"
+    backup = tmp_path / "corrupt.dump"
+    backup.write_bytes(b"not a PostgreSQL custom-format dump")
+    env = dict(os.environ)
+    env["MAIMEMO_RESTORE_ADMIN_URL"] = (
+        "postgresql://maimemo_test:test_only@127.0.0.1:5432/postgres"
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(
+            sys.executable,
+            "scripts/restore_postgres.py",
+            "--backup",
+            str(backup),
+            "--target-database",
+            target,
+            "--confirm-disposable-target",
+            target,
+            "--docker-container",
+            container,
+            env=env,
+        )
+
+    exists = _run(
+        "docker",
+        "exec",
+        container,
+        "psql",
+        "--username=maimemo_test",
+        "--dbname=postgres",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        f"SELECT 1 FROM pg_database WHERE datname = '{target}';",
+    )
+    assert exists.stdout.strip() == ""

@@ -131,6 +131,59 @@ async def test_standard_streamable_http_client_and_routes(
             assert forbidden.status_code == 403
 
 
+async def test_internal_host_requires_explicit_exact_allowlist(
+    settings: Settings, database_boundary: DatabaseBoundary
+) -> None:
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "host-test", "version": "1"},
+        },
+    }
+
+    default_server = create_mcp_app(settings)
+    async with default_server.asgi_app.router.lifespan_context(default_server.asgi_app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=default_server),
+            base_url="http://maimemo-mcp:8000",
+        ) as client:
+            denied = await client.post(
+                "/mcp",
+                headers={"Accept": "application/json, text/event-stream"},
+                json=request,
+            )
+            assert denied.status_code == 421
+
+    configured = settings.model_copy(update={"mcp_allowed_hosts": ("maimemo-mcp",)})
+    configured_server = create_mcp_app(configured)
+    async with configured_server.asgi_app.router.lifespan_context(configured_server.asgi_app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=configured_server),
+            base_url="http://maimemo-mcp:8000",
+        ) as client:
+            allowed = await client.post(
+                "/mcp",
+                headers={"Accept": "application/json, text/event-stream"},
+                json=request,
+            )
+            assert allowed.status_code == 200
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=configured_server),
+            base_url="http://evil.internal:8000",
+        ) as client:
+            denied = await client.post(
+                "/mcp",
+                headers={"Accept": "application/json, text/event-stream"},
+                json=request,
+            )
+            assert denied.status_code == 421
+
+
 async def test_health_routes_expose_only_safe_dependency_status(
     settings: Settings, database_boundary: DatabaseBoundary
 ) -> None:

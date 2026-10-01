@@ -66,6 +66,8 @@ def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
     hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "[::1]", "[::1]:*"]
     if settings.mcp_host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
         hosts.extend([settings.mcp_host, f"{settings.mcp_host}:*"])
+    for host in settings.mcp_allowed_hosts:
+        hosts.extend([host, f"{host}:*"])
     asgi_app = sdk.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,

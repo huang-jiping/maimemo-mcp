@@ -46,6 +46,11 @@
 http://127.0.0.1:8000/mcp
 ```
 
+若 Tunnel Client 受监督地运行在同一 Compose 网络，可改用
+`http://maimemo-mcp:8000/mcp`。基础 Compose 仅通过
+`MAIMEMO_MCP_ALLOWED_HOSTS=maimemo-mcp` 精确放行这个服务名；不要改成通配符，也不要把
+其他内部域名顺带加入。
+
 验证应用端点：
 
 ```text

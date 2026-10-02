@@ -1,11 +1,15 @@
 """Container entrypoint mode selection is explicit and closed."""
 
 import asyncio
+import sys
 import threading
+import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import uvicorn
 
 from maimemo_mcp import runtime
 from maimemo_mcp.config import Settings
@@ -266,3 +270,91 @@ def test_worker_schema_probe_is_cancelled_at_wait_deadline(
     monkeypatch.setattr(runtime.Worker, "run_forever", collect)
     assert runtime.main(["worker"]) != 0
     assert cancelled and not collect.called
+
+
+@pytest.mark.parametrize("platform", [
+    pytest.param("win32", marks=pytest.mark.skipif(
+        sys.platform != "win32", reason="requires actual Windows event loops",
+    )),
+    "linux",
+])
+def test_real_uvicorn_loop_reaches_asgi_with_psycopg_compatible_loop(
+    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch, platform: str,
+) -> None:
+    loops: list[asyncio.AbstractEventLoop] = []
+    responses: list[dict[str, Any]] = []
+
+    async def require(engine: object, expected: str) -> None:
+        pass
+
+    async def application(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        loops.append(asyncio.get_running_loop())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"loop_ready"})
+
+    async def serve(server: uvicorn.Server, sockets: object = None) -> None:
+        # Preserve real uvicorn.run -> Server.run -> Config.get_loop_factory.
+        # Only replace socket lifetime; Config.load and ASGI dispatch remain real.
+        server.config.load()
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            responses.append(message)
+
+        await server.config.loaded_app({
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/", "raw_path": b"/",
+            "query_string": b"", "headers": [], "client": ("127.0.0.1", 1),
+            "server": ("127.0.0.1", 8000),
+        }, receive, send)
+        server.started = True
+
+    monkeypatch.setattr(runtime.sys, "platform", platform)
+    monkeypatch.setattr(runtime, "run_upgrade", lambda settings: None)
+    monkeypatch.setattr(runtime, "require_current_schema", require)
+    monkeypatch.setattr(runtime, "create_mcp_app", lambda settings: application)
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    status = runtime.main(["mcp"])
+    assert len(loops) == 1
+    assert isinstance(loops[0], asyncio.SelectorEventLoop)
+    assert status == 0
+    assert responses == [
+        {"type": "http.response.start", "status": 200, "headers": []},
+        {"type": "http.response.body", "body": b"loop_ready"},
+    ]
+
+
+@pytest.mark.parametrize("suppress_cancellation", [False, True])
+def test_worker_waits_for_cancel_cleanup_but_never_collects_after_deadline(
+    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], suppress_cancellation: bool,
+) -> None:
+    events: list[str] = []
+    cancellation_elapsed = 0.0
+    started = time.monotonic()
+
+    async def require(engine: object, expected: str) -> None:
+        nonlocal cancellation_elapsed
+        events.append("probe")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancellation_elapsed = time.monotonic() - started
+            events.append("cancel")
+            # Model the driver's bounded cancellation/connection cleanup.
+            await asyncio.sleep(0.05)
+            events.append("cleaned")
+            if not suppress_cancellation:
+                raise
+
+    collect = Mock()
+    monkeypatch.setattr(runtime, "require_current_schema", require)
+    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    assert runtime.main(["worker"]) != 0
+    assert events == ["probe", "cancel", "cleaned"]
+    assert 0.9 <= cancellation_elapsed < 3
+    assert time.monotonic() - started >= cancellation_elapsed + 0.04
+    assert not collect.called
+    assert capsys.readouterr().err == "startup_error schema_wait_timeout\n"

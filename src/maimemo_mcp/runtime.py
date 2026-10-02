@@ -48,7 +48,9 @@ async def _run_worker(settings: Settings) -> None:
     try:
         expected = expected_schema_revision()
         try:
-            async with asyncio.timeout(settings.schema_wait_timeout_seconds):
+            # This is the cancellation decision deadline. Await the driver's bounded
+            # cleanup, even if it finishes later, and never collect after expiration.
+            async with asyncio.timeout(settings.schema_wait_timeout_seconds) as deadline:
                 while True:
                     try:
                         await require_current_schema(engine, expected)
@@ -58,8 +60,10 @@ async def _run_worker(settings: Settings) -> None:
         except TimeoutError:
             pass
         else:
-            await _collect(settings)
-            return
+            # A dependency may finish cleanup by suppressing CancelledError.
+            if not deadline.expired():
+                await _collect(settings)
+                return
         raise SchemaWaitTimeoutError() from None
     finally:
         await engine.dispose()
@@ -134,6 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_config=None,
             access_log=False,
             lifespan="on",
+            # Uvicorn creates its own loop, independently of startup preflight.
+            loop="asyncio:SelectorEventLoop" if sys.platform == "win32" else "auto",
         )
     except (
         MigrationError, SchemaDefinitionError, SchemaNotReadyError, SchemaWaitTimeoutError,

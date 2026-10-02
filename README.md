@@ -82,6 +82,8 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly \
 过期/部分数据、明确反馈、推测性反馈、撤销以及不支持的墨墨写入请求。确定性测试只校验
 语料结构、已注册工具、参数 Schema 和安全边界；多轮引用还会沿前序工具 output Schema 和
 当前工具 input Schema 解析 `$ref`/`anyOf`/对象/数组路径，并 fail-closed 校验类型、可空性
-和 format 兼容性。它不声称已经验证模型会选择正确工具。
+和 format 兼容性。`anyOf` 各可达来源分支逐一验证，不能用其他安全分支掩盖；中间路径的
+任一 null/缺失分支都会拒绝；Draft 2020-12 的 `$ref` sibling 与引用目标合取。它不声称
+已经验证模型会选择正确工具。
 真正的工具选择、参数生成和确认行为必须在 Secure MCP Tunnel 连通后由 ChatGPT 工作区
 端到端观察，并按 `docs/operations.md` 只记录工具名、参数类别、结果类别和警告代码。

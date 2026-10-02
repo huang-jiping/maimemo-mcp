@@ -100,114 +100,195 @@ def test_data_quality_scenarios_are_specific_and_reproducible() -> None:
 
 
 @dataclass(frozen=True)
-class SchemaShape:
-    types: frozenset[str]
-    formats: frozenset[str]
-    nullable: bool
-    may_be_missing: bool
+class SchemaBranch:
+    """One reachable conjunction; alternatives remain separate branches."""
+
+    constraints: tuple[dict[str, Any], ...]
 
 
-def dereference(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
-    seen: set[str] = set()
-    while "$ref" in schema:
+def resolve_reference(reference: object, root: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(reference, str) or not reference.startswith("#/"):
+        raise ValueError("only local schema references are supported")
+    resolved: Any = root
+    for token in reference[2:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if not isinstance(resolved, dict) or token not in resolved:
+            raise ValueError("schema reference does not resolve")
+        resolved = resolved[token]
+    if not isinstance(resolved, dict):
+        raise ValueError("schema reference target is not an object")
+    return resolved
+
+
+def combine(
+    left: list[SchemaBranch], right: list[SchemaBranch]
+) -> list[SchemaBranch]:
+    return [
+        SchemaBranch(first.constraints + second.constraints)
+        for first in left
+        for second in right
+    ]
+
+
+def expand_schema(
+    schema: dict[str, Any],
+    root: dict[str, Any],
+    references: tuple[str, ...] = (),
+) -> list[SchemaBranch]:
+    unsupported = {"allOf", "oneOf", "not", "if", "then", "else"} & schema.keys()
+    if unsupported:
+        raise ValueError(f"unsupported schema keyword: {sorted(unsupported)[0]}")
+    if "$ref" in schema:
         reference = schema["$ref"]
-        if not isinstance(reference, str) or not reference.startswith("#/") or reference in seen:
-            raise ValueError("only acyclic local schema references are supported")
-        seen.add(reference)
-        resolved: Any = root
-        for token in reference[2:].split("/"):
-            token = token.replace("~1", "/").replace("~0", "~")
-            if not isinstance(resolved, dict) or token not in resolved:
-                raise ValueError("schema reference does not resolve")
-            resolved = resolved[token]
-        if not isinstance(resolved, dict):
-            raise ValueError("schema reference target is not an object")
-        schema = resolved
-    return schema
+        if not isinstance(reference, str):
+            raise ValueError("schema reference must be a string")
+        if reference in references:
+            raise ValueError("cyclic schema reference")
+        referred = expand_schema(
+            resolve_reference(reference, root), root, references + (reference,)
+        )
+        siblings = {key: value for key, value in schema.items() if key != "$ref"}
+        # Draft 2020-12 applies $ref and its siblings as a conjunction.
+        if not siblings:
+            return referred
+        return combine(referred, expand_schema(siblings, root, references))
+    if "anyOf" in schema:
+        alternatives = schema["anyOf"]
+        if not isinstance(alternatives, list) or not alternatives:
+            raise ValueError("schema anyOf must be a non-empty list")
+        siblings = {key: value for key, value in schema.items() if key != "anyOf"}
+        shared = expand_schema(siblings, root, references) if siblings else [SchemaBranch(())]
+        expanded: list[SchemaBranch] = []
+        for alternative in alternatives:
+            if not isinstance(alternative, dict):
+                raise ValueError("schema anyOf alternative must be an object")
+            expanded.extend(combine(shared, expand_schema(alternative, root, references)))
+        return expanded
+    return [SchemaBranch((schema,))]
 
 
-def variants(schema: dict[str, Any], root: dict[str, Any]) -> list[dict[str, Any]]:
-    schema = dereference(schema, root)
-    alternatives = schema.get("anyOf")
-    if alternatives is None:
-        return [schema]
-    if not isinstance(alternatives, list) or not alternatives:
-        raise ValueError("schema anyOf must be a non-empty list")
-    expanded: list[dict[str, Any]] = []
-    for alternative in alternatives:
-        if not isinstance(alternative, dict):
-            raise ValueError("schema anyOf alternative must be an object")
-        expanded.extend(variants(alternative, root))
-    return expanded
+def branch_types(branch: SchemaBranch, *, label: str) -> frozenset[str]:
+    possible: set[str] | None = None
+    for constraint in branch.constraints:
+        declared = constraint.get("type")
+        if declared is None:
+            if "properties" in constraint:
+                declared = "object"
+            elif "items" in constraint:
+                declared = "array"
+            else:
+                continue
+        values = {declared} if isinstance(declared, str) else set(declared)
+        if not values or not all(isinstance(value, str) for value in values):
+            raise ValueError(f"{label} schema type is invalid")
+        possible = values if possible is None else possible & values
+    if possible is None:
+        raise ValueError(f"{label} schema has no explicit type")
+    return frozenset(possible)
 
 
-def schema_path(root: dict[str, Any], path: str, *, label: str) -> SchemaShape:
+def branch_format(branch: SchemaBranch, *, label: str) -> str | None:
+    formats = {
+        constraint["format"]
+        for constraint in branch.constraints
+        if isinstance(constraint.get("format"), str)
+    }
+    if len(formats) > 1:
+        raise ValueError(f"{label} schema has incompatible format constraints")
+    return next(iter(formats), None)
+
+
+def path_branches(
+    root: dict[str, Any], path: str, *, label: str, source: bool
+) -> list[SchemaBranch]:
     if not path or any(not token for token in path.split(".")):
         raise ValueError(f"{label} path is invalid")
-    current: list[tuple[dict[str, Any], bool, bool]] = [(root, False, False)]
+    current = expand_schema(root, root)
     for token in path.split("."):
-        following: list[tuple[dict[str, Any], bool, bool]] = []
-        for schema, nullable, missing in current:
-            non_null = False
-            for option in variants(schema, root):
-                option_type = option.get("type")
-                if option_type == "null":
-                    nullable = True
-                    continue
-                non_null = True
-                properties = option.get("properties")
-                if option_type == "object" or isinstance(properties, dict):
-                    if not isinstance(properties, dict) or token not in properties:
+        following: list[SchemaBranch] = []
+        for branch in current:
+            types = branch_types(branch, label=label)
+            if not types:
+                continue  # Unsatisfiable conjunction is unreachable.
+            if "null" in types:
+                raise ValueError(f"{label} path has a reachable null branch")
+            if types == {"object"}:
+                children: list[dict[str, Any]] = []
+                required = False
+                for constraint in branch.constraints:
+                    properties = constraint.get("properties")
+                    if not isinstance(properties, dict):
+                        continue
+                    if token in properties:
+                        child = properties[token]
+                        if not isinstance(child, dict):
+                            raise ValueError(f"{label} property schema is invalid")
+                        children.append(child)
+                        required |= token in constraint.get("required", [])
+                    elif constraint.get("additionalProperties") is False:
                         raise ValueError(f"{label} path does not exist")
-                    required = option.get("required", [])
-                    following.append(
-                        (properties[token], nullable, missing or token not in required)
-                    )
-                elif option_type == "array":
-                    if token != "[]" and not token.isdigit():
-                        raise ValueError(f"{label} path must select an array item")
-                    items = option.get("items")
-                    if not isinstance(items, dict):
-                        raise ValueError(f"{label} array has no supported item schema")
-                    following.append((items, nullable, missing))
-                else:
-                    raise ValueError(f"{label} path crosses a scalar")
-            if not non_null:
-                raise ValueError(f"{label} path resolves only to null")
+                if not children:
+                    raise ValueError(f"{label} path does not exist")
+                if source and not required:
+                    raise ValueError(f"{label} path may be missing")
+                child_branches = [SchemaBranch(())]
+                for child in children:
+                    child_branches = combine(child_branches, expand_schema(child, root))
+                following.extend(child_branches)
+            elif types == {"array"}:
+                if token == "[]" or not token.isdigit():
+                    raise ValueError(f"{label} path cannot safely select an array item")
+                index = int(token)
+                items: list[dict[str, Any]] = []
+                guaranteed = 0
+                for constraint in branch.constraints:
+                    if "prefixItems" in constraint:
+                        raise ValueError(f"{label} path uses unsupported prefixItems")
+                    item = constraint.get("items")
+                    if isinstance(item, dict):
+                        items.append(item)
+                    minimum = constraint.get("minItems")
+                    if isinstance(minimum, int):
+                        guaranteed = max(guaranteed, minimum)
+                if not items or source and guaranteed <= index:
+                    raise ValueError(f"{label} array item may be missing")
+                item_branches = [SchemaBranch(())]
+                for item in items:
+                    item_branches = combine(item_branches, expand_schema(item, root))
+                following.extend(item_branches)
+            else:
+                raise ValueError(f"{label} path crosses incompatible schema types")
         if not following:
             raise ValueError(f"{label} path does not resolve")
         current = following
-
-    types: set[str] = set()
-    formats: set[str] = set()
-    nullable = False
-    may_be_missing = False
-    for schema, inherited_nullable, inherited_missing in current:
-        nullable |= inherited_nullable
-        may_be_missing |= inherited_missing
-        for option in variants(schema, root):
-            option_type = option.get("type")
-            if option_type == "null":
-                nullable = True
-                continue
-            if not isinstance(option_type, str):
-                raise ValueError(f"{label} terminal schema has no explicit type")
-            types.add(option_type)
-            if isinstance(option.get("format"), str):
-                formats.add(option["format"])
-    if not types:
-        raise ValueError(f"{label} path has no value type")
-    return SchemaShape(frozenset(types), frozenset(formats), nullable, may_be_missing)
+    terminal = [branch for branch in current if branch_types(branch, label=label)]
+    if not terminal:
+        raise ValueError(f"{label} path has no reachable value")
+    return terminal
 
 
-def assert_compatible(source: SchemaShape, target: SchemaShape) -> None:
-    if source.may_be_missing or source.nullable and not target.nullable:
-        raise ValueError("dynamic reference source is incompatible with required target")
-    compatible = target.types | ({"integer"} if "number" in target.types else set())
-    if not source.types <= compatible:
-        raise ValueError("dynamic reference source and target types are incompatible")
-    if target.formats and not target.formats <= source.formats:
-        raise ValueError("dynamic reference source and target formats are incompatible")
+def branch_is_accepted(source: SchemaBranch, target: SchemaBranch) -> bool:
+    source_types = branch_types(source, label="result")
+    target_types = branch_types(target, label="argument")
+    accepted_types = target_types | ({"integer"} if "number" in target_types else set())
+    if not source_types <= accepted_types:
+        return False
+    target_format = branch_format(target, label="argument")
+    return target_format is None or branch_format(source, label="result") == target_format
+
+
+def validate_schema_reference(
+    source_root: dict[str, Any],
+    source_path: str,
+    target_root: dict[str, Any],
+    target_path: str,
+) -> list[SchemaBranch]:
+    sources = path_branches(source_root, source_path, label="result", source=True)
+    targets = path_branches(target_root, target_path, label="argument", source=False)
+    # Universal over every reachable source branch; target anyOf is an accepting union.
+    if any(not any(branch_is_accepted(source, target) for target in targets) for source in sources):
+        raise ValueError("dynamic reference source and target schemas are incompatible")
+    return targets
 
 
 def resolved_arguments(
@@ -241,15 +322,19 @@ def resolved_arguments(
     target_schema = registered[target_tool_name].input_schema
     if not isinstance(source_schema, dict) or not isinstance(target_schema, dict):
         raise ValueError("dynamic reference tool schema is unavailable")
-    source_shape = schema_path(source_schema, reuse["result_path"], label="result")
-    target_shape = schema_path(target_schema, reuse["argument_path"], label="argument")
+    target_branches = validate_schema_reference(
+        source_schema,
+        reuse["result_path"],
+        target_schema,
+        reuse["argument_path"],
+    )
     # Current corpus intentionally supports only scalar strings. New shapes must add tests first.
-    if target_shape.types != frozenset({"string"}):
+    if any(branch_types(branch, label="argument") != {"string"} for branch in target_branches):
         raise ValueError("dynamic references currently support only string targets")
-    assert_compatible(source_shape, target_shape)
+    formats = {branch_format(branch, label="argument") for branch in target_branches}
     target[parts[-1]] = (
         "00000000-0000-4000-8000-000000000001"
-        if "uuid" in target_shape.formats
+        if "uuid" in formats
         else "resolved-spelling"
     )
     return arguments
@@ -265,6 +350,92 @@ def test_identifier_reuse_is_same_case_backward_and_dynamic() -> None:
         ("profile-indirect-followup", "get_word_learning_profile"),
         ("feedback-explicit", "retract_feedback"),
     }
+
+
+def test_schema_reference_compatibility_is_branch_safe_and_order_independent() -> None:
+    uuid_string = {"type": "string", "format": "uuid"}
+    plain_string = {"type": "string"}
+    uuid_target = {
+        "type": "object",
+        "properties": {"value": uuid_string},
+        "required": ["value"],
+    }
+    plain_target = {
+        "type": "object",
+        "properties": {"value": plain_string},
+        "required": ["value"],
+    }
+
+    for alternatives in (
+        [uuid_string, plain_string],
+        [plain_string, uuid_string],
+    ):
+        source = {
+            "type": "object",
+            "properties": {"value": {"anyOf": alternatives}},
+            "required": ["value"],
+        }
+        with pytest.raises(ValueError, match="incompatible"):
+            validate_schema_reference(source, "value", uuid_target, "value")
+
+    all_uuid = {
+        "type": "object",
+        "properties": {"value": {"anyOf": [uuid_string, uuid_string]}},
+        "required": ["value"],
+    }
+    validate_schema_reference(all_uuid, "value", uuid_target, "value")
+    validate_schema_reference(plain_target, "value", plain_target, "value")
+    validate_schema_reference(uuid_target, "value", plain_target, "value")
+
+
+def test_schema_reference_preserves_ref_siblings_and_rejects_bad_refs() -> None:
+    source = {
+        "$defs": {"Text": {"type": "string"}},
+        "type": "object",
+        "properties": {"value": {"$ref": "#/$defs/Text", "format": "uuid"}},
+        "required": ["value"],
+    }
+    target = {
+        "type": "object",
+        "properties": {"value": {"type": "string", "format": "uuid"}},
+        "required": ["value"],
+    }
+    validate_schema_reference(source, "value", target, "value")
+
+    missing = copy.deepcopy(source)
+    missing["properties"]["value"] = {"$ref": "#/$defs/Missing"}
+    with pytest.raises(ValueError, match="does not resolve"):
+        validate_schema_reference(missing, "value", target, "value")
+
+    cycle = {
+        "$defs": {"A": {"$ref": "#/$defs/B"}, "B": {"$ref": "#/$defs/A"}},
+        "type": "object",
+        "properties": {"value": {"$ref": "#/$defs/A"}},
+        "required": ["value"],
+    }
+    with pytest.raises(ValueError, match="cyclic"):
+        validate_schema_reference(cycle, "value", target, "value")
+
+
+def test_nullable_intermediate_reference_is_rejected_independent_of_order() -> None:
+    object_branch = {
+        "type": "object",
+        "properties": {"id": {"type": "string"}},
+        "required": ["id"],
+    }
+    target = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    for alternatives in ([object_branch, {"type": "null"}], [{"type": "null"}, object_branch]):
+        source = {
+            "type": "object",
+            "properties": {"data": {"anyOf": alternatives}},
+            "required": ["data"],
+        }
+        with pytest.raises(ValueError, match="null"):
+            validate_schema_reference(source, "data.id", target, "value")
 
 
 async def test_identifier_reuse_paths_and_types_match_live_tool_schemas(

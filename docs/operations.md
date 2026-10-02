@@ -118,6 +118,9 @@ URL 从环境变量读取，不接收 URL 命令行参数。
 fail-closed 白名单：只允许单值 `sslmode`，值域为 `disable`、`allow`、`prefer`、`require`、
 `verify-ca` 或 `verify-full`。其他键、大小写变体、重复值和自由文本均被安全拒绝；尤其不要
 用 query 覆盖 host、port、user、password、dbname、service 或把任何秘密写到 query 参数。
+query 键和值必须使用上述 ASCII 字面量，空 query、percent 编码键值、fragment 及多余分隔符
+均不接受。密码中的 `@`、`:`、`/`、`%` 必须进行标准 percent 编码；host 只接受 DNS、IPv4
+或带方括号的 IPv6。当前安全子集不支持通过 `host=` query 指定 Unix socket。
 
 ```text
 export MAIMEMO_BACKUP_DATABASE_URL='postgresql://app_user:...@db.internal:5432/maimemo'

@@ -69,6 +69,14 @@ def test_postgres_argv_allows_only_bounded_sslmode_query(
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
 
+    ambiguous_host = make_url("postgresql://u:prefix@REVIEW_SECRET@localhost/d")
+    with pytest.raises(ValueError) as host_error:
+        tools.database_argument(ambiguous_host)
+    host_formatted = "".join(traceback.format_exception(host_error.value))
+    assert "REVIEW_SECRET" not in host_formatted
+    assert host_error.value.__cause__ is None
+    assert host_error.value.__context__ is None
+
 
 def test_malformed_database_url_error_chain_does_not_retain_secret(
     monkeypatch: pytest.MonkeyPatch,
@@ -86,6 +94,23 @@ def test_malformed_database_url_error_chain_does_not_retain_secret(
     assert private_url not in formatted
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+
+
+def test_maintenance_url_preserves_percent_encoded_password_without_argv_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "scripts"))
+    postgres_cli = importlib.import_module("_postgres_cli")
+    monkeypatch.setenv(
+        "MAIMEMO_BACKUP_DATABASE_URL",
+        "postgresql://u:p%40ss%3Aword%2Fpercent%25@[::1]:5432/d?sslmode=require",
+    )
+    url = postgres_cli.database_url_from_env("MAIMEMO_BACKUP_DATABASE_URL")
+    dsn, environment = postgres_cli.PostgresTools().database_argument(url)
+    assert "p@ss" not in dsn
+    assert make_url(dsn).host == "::1"
+    assert make_url(dsn).query == {"sslmode": "require"}
+    assert environment["PGPASSWORD"] == "p@ss:word/percent%"
 
 
 @pytest.mark.parametrize(
@@ -155,7 +180,7 @@ def test_backup_restore_main_rejects_parseable_query_override_before_subprocess(
 ) -> None:
     monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "scripts"))
     module = importlib.import_module(module_name)
-    private_url = "postgresql://u:prefix@host/d?port=REVIEW_SECRET@localhost/d"
+    private_url = "postgresql://u:prefix@REVIEW_SECRET@localhost/d"
     monkeypatch.setenv(url_name, private_url)
     backup = tmp_path / "synthetic.dump"
     backup.write_bytes(b"synthetic")
@@ -177,7 +202,13 @@ def test_backup_restore_main_rejects_parseable_query_override_before_subprocess(
     monkeypatch.setattr(module.PostgresTools, "validate", lambda self, *names: None)
 
     def fail_if_started(self: object, name: str, args: list[str], **kwargs: object) -> None:
-        raise subprocess.CalledProcessError(1, [name, *args])
+        subprocess.run(
+            [sys.executable, "-c", "import sys; sys.exit(23)", *args],
+            text=True,
+            capture_output=True,
+            shell=False,
+            check=True,
+        )
 
     monkeypatch.setattr(module.PostgresTools, "run", fail_if_started)
 

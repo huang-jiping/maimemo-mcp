@@ -40,6 +40,7 @@ def test_startup_configuration_failure_is_controlled_and_secret_free(
 @pytest.mark.parametrize("private_url", [
     "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
     "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+    "postgresql+psycopg://u:prefix@LEAK@localhost/d",
 ])
 def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback(
     monkeypatch: pytest.MonkeyPatch,

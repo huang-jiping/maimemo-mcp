@@ -89,6 +89,14 @@ def test_database_url_requires_async_psycopg_driver(environ: dict[str, str]) -> 
         "application_name=REVIEW_SECRET",
         "sslmode=REVIEW_SECRET",
         "sslmode=require&sslmode=REVIEW_SECRET",
+        "",
+        "host=",
+        "sslmode=",
+        "sslmode=require&sslmode=",
+        "sslmode=require&",
+        "%73slmode=require",
+        "sslmode=%72equire",
+        "sslmode=require;port=5432",
     ],
 )
 def test_database_url_query_is_fail_closed_without_retaining_values(
@@ -115,6 +123,67 @@ def test_database_url_query_is_fail_closed_without_retaining_values(
 def test_database_url_allows_bounded_sslmode(environ: dict[str, str]) -> None:
     environ["MAIMEMO_DATABASE_URL"] += "?sslmode=require"
     assert Settings.load(environ).database_url.endswith("?sslmode=require")
+
+
+@pytest.mark.parametrize("private_url", [
+    "postgresql+psycopg://u:prefix@REVIEW_SECRET@localhost/d",
+    "postgresql+psycopg://u:p@first@REVIEW_SECRET/d",
+    "postgresql+psycopg://u:p@REVIEW%40SECRET/d",
+    "postgresql+psycopg://u:p@REVIEW SECRET/d",
+    "postgresql+psycopg://u:p@REVIEW%20SECRET/d",
+    "postgresql+psycopg://u:p%20REVIEW_SECRET@localhost/d",
+    "postgresql+psycopg://u:p%0AREVIEW_SECRET@localhost/d",
+    "postgresql+psycopg://u:p@localhost\\REVIEW_SECRET/d",
+    "postgresql+psycopg://u:p@[::1/d",
+    "postgresql+psycopg://u:p@localhost:abc/d",
+    "postgresql+psycopg://u:p@localhost:99999/d",
+    "postgresql+psycopg://u:prefix/REVIEW_SECRET@localhost/d",
+    "postgresql+psycopg://u:p@localhost/d#REVIEW_SECRET",
+    "postgresql+psycopg://u:p@localhost/d%ZZ",
+])
+def test_raw_database_authority_and_path_ambiguity_is_rejected_without_values(
+    environ: dict[str, str], private_url: str,
+) -> None:
+    import traceback
+
+    environ["MAIMEMO_DATABASE_URL"] = private_url
+    with pytest.raises(ValidationError) as caught:
+        Settings.load(environ)
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "REVIEW_SECRET" not in formatted
+    assert private_url not in formatted
+    assert caught.value.errors(include_input=False, include_context=False, include_url=False) == [
+        {
+            "type": "value_error",
+            "loc": ("database_url",),
+            "msg": "Value error, Invalid database URL",
+        }
+    ]
+
+
+@pytest.mark.parametrize("sslmode", [
+    "disable", "allow", "prefer", "require", "verify-ca", "verify-full",
+])
+def test_raw_database_url_accepts_encoded_password_ipv6_and_sslmode(
+    environ: dict[str, str], sslmode: str,
+) -> None:
+    environ["MAIMEMO_DATABASE_URL"] = (
+        "postgresql+psycopg://u:p%40ss%3Aword%2Fpercent%25@[::1]:5432/d"
+        f"?sslmode={sslmode}"
+    )
+    assert Settings.load(environ).database_url == environ["MAIMEMO_DATABASE_URL"]
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql+psycopg://localhost/d",
+    "postgresql+psycopg://unused",
+])
+def test_raw_database_url_accepts_safe_host_without_userinfo_or_database(
+    environ: dict[str, str], url: str,
+) -> None:
+    environ["MAIMEMO_DATABASE_URL"] = url
+    assert Settings.load(environ).database_url == url
 
 
 def test_read_maimemo_token_strips_trailing_newline(environ: dict[str, str]) -> None:

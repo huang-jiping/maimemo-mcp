@@ -115,7 +115,8 @@ class LiveContent(WorkflowModel):
 
 
 class ProfileView(WorkflowModel):
-    spelling: str
+    # Echoes WordProfileRequest.spelling, so the output contract retains its proven bounds.
+    spelling: str = Field(min_length=1, max_length=500)
     profiles: list[LocalProfile]
     live_content: LiveContent | None = None
 

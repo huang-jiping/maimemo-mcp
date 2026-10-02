@@ -24,6 +24,29 @@ COMPOSITES = {
     "get_learning_data_health": "data_health",
 }
 REFERENCE = re.compile(r"^\$\{turn:(\d+):([a-z_.]+)}$")
+ANNOTATION_KEYWORDS = {
+    "$comment",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+}
+RESOURCE_KEYWORDS = {"$schema", "$id", "$anchor", "$defs", "definitions", "components"}
+IMPLEMENTED_KEYWORDS = {
+    "$ref",
+    "anyOf",
+    "type",
+    "format",
+    "properties",
+    "required",
+    "items",
+    "additionalProperties",
+    "minLength",
+    "maxLength",
+}
 
 
 def load_cases() -> list[dict[str, Any]]:
@@ -135,7 +158,7 @@ def expand_schema(
     root: dict[str, Any],
     references: tuple[str, ...] = (),
 ) -> list[SchemaBranch]:
-    unsupported = {"allOf", "oneOf", "not", "if", "then", "else"} & schema.keys()
+    unsupported = set(schema) - ANNOTATION_KEYWORDS - RESOURCE_KEYWORDS - IMPLEMENTED_KEYWORDS
     if unsupported:
         raise ValueError(f"unsupported schema keyword: {sorted(unsupported)[0]}")
     if "$ref" in schema:
@@ -214,17 +237,24 @@ def path_branches(
                 raise ValueError(f"{label} path has a reachable null branch")
             if types == {"object"}:
                 children: list[dict[str, Any]] = []
-                required = False
+                required = any(
+                    token in constraint.get("required", []) for constraint in branch.constraints
+                )
                 for constraint in branch.constraints:
                     properties = constraint.get("properties")
                     if not isinstance(properties, dict):
+                        if constraint.get("additionalProperties") is False:
+                            raise ValueError(f"{label} path does not exist")
+                        if isinstance(constraint.get("additionalProperties"), dict):
+                            raise ValueError(
+                                f"{label} path uses unsupported additionalProperties schema"
+                            )
                         continue
                     if token in properties:
                         child = properties[token]
                         if not isinstance(child, dict):
                             raise ValueError(f"{label} property schema is invalid")
                         children.append(child)
-                        required |= token in constraint.get("required", [])
                     elif constraint.get("additionalProperties") is False:
                         raise ValueError(f"{label} path does not exist")
                 if not children:
@@ -270,11 +300,45 @@ def path_branches(
 def branch_is_accepted(source: SchemaBranch, target: SchemaBranch) -> bool:
     source_types = branch_types(source, label="result")
     target_types = branch_types(target, label="argument")
+    if (source_types | target_types) & {"object", "array"}:
+        raise ValueError("unsupported terminal object or array schema")
+    if any("additionalProperties" in item for item in source.constraints + target.constraints):
+        raise ValueError("unsupported terminal object additionalProperties constraint")
     accepted_types = target_types | ({"integer"} if "number" in target_types else set())
     if not source_types <= accepted_types:
         return False
     target_format = branch_format(target, label="argument")
-    return target_format is None or branch_format(source, label="result") == target_format
+    if target_format is not None and branch_format(source, label="result") != target_format:
+        return False
+    if "string" in source_types:
+        source_minimum, source_maximum = string_length_bounds(source, label="result")
+        target_minimum, target_maximum = string_length_bounds(target, label="argument")
+        if source_minimum < target_minimum:
+            return False
+        if target_maximum is not None and (
+            source_maximum is None or source_maximum > target_maximum
+        ):
+            return False
+    return True
+
+
+def string_length_bounds(branch: SchemaBranch, *, label: str) -> tuple[int, int | None]:
+    minimum = 0
+    maximum: int | None = None
+    for constraint in branch.constraints:
+        if "minLength" in constraint:
+            value = constraint["minLength"]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{label} minLength is invalid")
+            minimum = max(minimum, value)
+        if "maxLength" in constraint:
+            value = constraint["maxLength"]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{label} maxLength is invalid")
+            maximum = value if maximum is None else min(maximum, value)
+    if maximum is not None and minimum > maximum:
+        raise ValueError(f"{label} string length constraints are unsatisfiable")
+    return minimum, maximum
 
 
 def validate_schema_reference(
@@ -392,12 +456,26 @@ def test_schema_reference_preserves_ref_siblings_and_rejects_bad_refs() -> None:
     source = {
         "$defs": {"Text": {"type": "string"}},
         "type": "object",
-        "properties": {"value": {"$ref": "#/$defs/Text", "format": "uuid"}},
+        "properties": {
+            "value": {
+                "$ref": "#/$defs/Text",
+                "format": "uuid",
+                "minLength": 36,
+                "maxLength": 36,
+            }
+        },
         "required": ["value"],
     }
     target = {
         "type": "object",
-        "properties": {"value": {"type": "string", "format": "uuid"}},
+        "properties": {
+            "value": {
+                "type": "string",
+                "format": "uuid",
+                "minLength": 1,
+                "maxLength": 36,
+            }
+        },
         "required": ["value"],
     }
     validate_schema_reference(source, "value", target, "value")
@@ -438,6 +516,128 @@ def test_nullable_intermediate_reference_is_rejected_independent_of_order() -> N
             validate_schema_reference(source, "data.id", target, "value")
 
 
+@pytest.mark.parametrize(
+    ("keyword", "value"),
+    [
+        ("enum", ["allowed"]),
+        ("const", "allowed"),
+        ("pattern", "^allowed$"),
+        ("minimum", 1),
+        ("maximum", 10),
+        ("multipleOf", 2),
+        ("minItems", 1),
+        ("maxItems", 2),
+        ("uniqueItems", True),
+        ("minProperties", 1),
+        ("maxProperties", 2),
+        ("patternProperties", {"^x": {"type": "string"}}),
+        ("propertyNames", {"pattern": "^x"}),
+    ],
+)
+def test_unimplemented_assertion_keywords_fail_closed(keyword: str, value: object) -> None:
+    source = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    target = copy.deepcopy(source)
+    target["properties"]["value"][keyword] = value
+    with pytest.raises(ValueError, match="unsupported schema keyword"):
+        validate_schema_reference(source, "value", target, "value")
+
+
+def test_annotation_only_and_provable_string_lengths_are_supported() -> None:
+    annotations = {
+        "$comment": "Annotation only",
+        "title": "Value",
+        "description": "Annotation only",
+        "default": "x",
+        "examples": ["x"],
+        "deprecated": False,
+        "readOnly": True,
+        "writeOnly": False,
+    }
+    source = {
+        "type": "object",
+        "properties": {
+            "value": {"type": "string", "minLength": 1, "maxLength": 5, **annotations}
+        },
+        "required": ["value"],
+    }
+    broad_target = {
+        "type": "object",
+        "properties": {"value": {"type": "string", "minLength": 1, "maxLength": 10}},
+        "required": ["value"],
+    }
+    validate_schema_reference(source, "value", broad_target, "value")
+
+    plain_source = copy.deepcopy(source)
+    plain_source["properties"]["value"] = {"type": "string"}
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_schema_reference(plain_source, "value", broad_target, "value")
+
+    narrow_target = copy.deepcopy(broad_target)
+    narrow_target["properties"]["value"]["maxLength"] = 4
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_schema_reference(source, "value", narrow_target, "value")
+
+
+def test_additional_properties_terminal_constraint_fails_closed() -> None:
+    source = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": "object",
+                "properties": {"known": {"type": "string"}},
+            }
+        },
+        "required": ["value"],
+    }
+    target = copy.deepcopy(source)
+    target["properties"]["value"]["additionalProperties"] = False
+    with pytest.raises(ValueError, match="unsupported terminal object"):
+        validate_schema_reference(source, "value", target, "value")
+
+
+def test_ref_sibling_required_is_conjoined_independently_from_properties() -> None:
+    target = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    source = {
+        "$defs": {
+            "Container": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+            }
+        },
+        "type": "object",
+        "properties": {
+            "data": {"$ref": "#/$defs/Container", "required": ["value"]}
+        },
+        "required": ["data"],
+    }
+    validate_schema_reference(source, "data.value", target, "value")
+
+    missing_property = copy.deepcopy(source)
+    missing_property["$defs"]["Container"]["properties"] = {}
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_schema_reference(missing_property, "data.value", target, "value")
+
+    conflicting = copy.deepcopy(source)
+    conflicting["properties"]["data"]["properties"] = {
+        "value": {"type": "integer"}
+    }
+    with pytest.raises(ValueError, match="does not resolve|incompatible|no reachable value"):
+        validate_schema_reference(conflicting, "data.value", target, "value")
+
+    closed_sibling = copy.deepcopy(source)
+    closed_sibling["properties"]["data"]["additionalProperties"] = False
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_schema_reference(closed_sibling, "data.value", target, "value")
+
+
 async def test_identifier_reuse_paths_and_types_match_live_tool_schemas(
     evaluation_settings: Settings,
 ) -> None:
@@ -462,7 +662,7 @@ async def test_identifier_reuse_paths_and_types_match_live_tool_schemas(
     mismatch["turns"][1]["expected_arguments"]["request"]["spelling"] = (
         "${turn:1:data.profiles}"
     )
-    with pytest.raises(ValueError, match="incompatible"):
+    with pytest.raises(ValueError, match="incompatible|unsupported terminal"):
         resolved_arguments(mismatch, mismatch["turns"][1], 2, registered)
 
     forward = copy.deepcopy(profile)

@@ -188,7 +188,12 @@ Schema 解析路径与 `$ref`、`anyOf`、对象和数组，并校验 JSON 类�
 对每个可达来源分支做 universal 安全判断，目标 `anyOf` 按可接受并集处理；分支顺序不影响
 结论。中间路径任一 null/缺失分支均拒绝，`$ref` sibling 按 Draft 2020-12 与引用目标合取，
 循环或不存在的引用拒绝。解析器当前只允许标量字符串目标，未知关键 Schema 形态一律失败，
-不能复制工具 Schema 到语料来形成自证。Tunnel 连通后，应逐项观察并只记录：用例 ID、工具名、参数字段名或参数类别、
+固定白名单中的 title/description/default/examples/deprecated/readOnly/writeOnly/$comment 等纯
+annotation 可忽略；type、format、required、properties、anyOf、$ref 和可证明的字符串
+minLength/maxLength 参与判断。enum、const、pattern、数值/数组/对象收窄断言、终端
+additionalProperties 及未知关键字均 fail closed。`$defs`/`definitions`/`components` 只作为
+引用资源容器，不当成实例断言，也不能复制工具 Schema 到语料来形成自证。Tunnel 连通后，
+应逐项观察并只记录：用例 ID、工具名、参数字段名或参数类别、
 结果类别、警告代码、是否要求用户确认。不要记录参数值中的个人标识符或任何结果正文。
 
 至少执行：直接请求、间接表达、多轮标识符复用、stale/partial、明确反馈、推测性反馈、

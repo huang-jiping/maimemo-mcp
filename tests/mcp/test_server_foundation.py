@@ -40,15 +40,39 @@ class DatabaseBoundary:
     def __init__(self) -> None:
         self.failure = False
         self.statements: list[str] = []
+        self.alembic_revisions: tuple[str, ...] = ("0004",)
+        self.metadata_revisions: tuple[str, ...] = ("0004",)
+        self.tables = ("alembic_version", "schema_metadata")
 
     @asynccontextmanager
     async def connect(self, engine: AsyncEngine) -> AsyncIterator["DatabaseBoundary"]:
         yield self
 
-    async def execute(self, statement: Any) -> None:
+    async def execute(self, statement: Any) -> Any:
         self.statements.append(str(statement))
         if self.failure:
             raise RuntimeError("test-token-only postgresql://secret personal-learning-statistics")
+        if "to_regclass" in str(statement):
+            return VersionResult(self.tables)
+        if "alembic_version" in str(statement):
+            return VersionResult(self.alembic_revisions)
+        if "schema_metadata" in str(statement):
+            return VersionResult(self.metadata_revisions)
+        raise AssertionError(f"Unexpected readiness query: {statement}")
+
+
+class VersionResult:
+    def __init__(self, values: tuple[str, ...]) -> None:
+        self.values = values
+
+    def one(self) -> tuple[str, ...]:
+        return self.values
+
+    def scalars(self) -> "VersionResult":
+        return self
+
+    def all(self) -> tuple[str, ...]:
+        return self.values
 
 
 @pytest.fixture
@@ -203,7 +227,13 @@ async def test_health_routes_expose_only_safe_dependency_status(
             assert ready.status_code == 200
             assert ready.headers["content-type"] == "application/json"
             assert ready.json() == {"status": "ready"}
-            assert database_boundary.statements == ["SELECT 1"]
+            assert len(database_boundary.statements) == 3
+            assert all(
+                "to_regclass" in statement
+                or "alembic_version" in statement
+                or "schema_metadata" in statement
+                for statement in database_boundary.statements
+            )
             database_boundary.failure = True
             failed = await client.get("/health/ready")
             assert failed.status_code == 503
@@ -214,6 +244,36 @@ async def test_health_routes_expose_only_safe_dependency_status(
             closed = await client.get("/health/ready")
             assert closed.status_code == 503
             assert closed.json() == {"status": "not_ready", "reason": "http_client_closed"}
+
+
+@pytest.mark.parametrize(
+    ("alembic", "metadata"),
+    [
+        ((), ()),
+        (("0003",), ("0003",)),
+        (("9999",), ("9999",)),
+        (("0004", "branch"), ("0004",)),
+        (("0004",), ("0003",)),
+    ],
+)
+async def test_readiness_rejects_noncurrent_schema(
+    settings: Settings,
+    database_boundary: DatabaseBoundary,
+    alembic: tuple[str, ...],
+    metadata: tuple[str, ...],
+) -> None:
+    database_boundary.alembic_revisions = alembic
+    database_boundary.metadata_revisions = metadata
+    server = create_mcp_app(settings)
+    async with server.asgi_app.router.lifespan_context(server.asgi_app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=server), base_url="http://localhost"
+        ) as client:
+            response = await client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "reason": "schema_incompatible"}
+    for sensitive in ("test-token-only", "postgresql://", "secret", "personal-learning"):
+        assert sensitive not in response.text
 
 
 def test_tool_envelope_serializes_utc_and_completeness() -> None:

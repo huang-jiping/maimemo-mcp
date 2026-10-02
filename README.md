@@ -87,6 +87,8 @@ uv run python scripts/smoke_readonly_api.py --confirm-readonly \
 已经验证模型会选择正确工具。解析器显式区分 annotation 和 assertion：只忽略固定白名单
 中的纯注解，实现 type、format、对象路径、required 以及可证明的字符串长度子集；enum、
 const、pattern、数值/数组/对象收窄断言和其他未知关键字一律拒绝。Profile 输出保留其输入
-已证明的 1–500 字符边界，使合法多轮引用无需绕过约束。
+已证明的 1–500 字符边界，使合法多轮引用无需绕过约束。对象 conjunction 会逐项判断属性：
+未在某个 conjunct 的 `properties` 中声明的属性仍受该 conjunct 的 `additionalProperties`
+约束；Schema 形式会与其他 child Schema 合取，`false` 拒绝，`true` 或缺省不增加约束。
 真正的工具选择、参数生成和确认行为必须在 Secure MCP Tunnel 连通后由 ChatGPT 工作区
 端到端观察，并按 `docs/operations.md` 只记录工具名、参数类别、结果类别和警告代码。

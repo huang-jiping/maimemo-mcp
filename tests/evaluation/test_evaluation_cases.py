@@ -242,21 +242,23 @@ def path_branches(
                 )
                 for constraint in branch.constraints:
                     properties = constraint.get("properties")
-                    if not isinstance(properties, dict):
-                        if constraint.get("additionalProperties") is False:
-                            raise ValueError(f"{label} path does not exist")
-                        if isinstance(constraint.get("additionalProperties"), dict):
-                            raise ValueError(
-                                f"{label} path uses unsupported additionalProperties schema"
-                            )
-                        continue
-                    if token in properties:
+                    if properties is not None and not isinstance(properties, dict):
+                        raise ValueError(f"{label} properties schema is invalid")
+                    if isinstance(properties, dict) and token in properties:
                         child = properties[token]
                         if not isinstance(child, dict):
                             raise ValueError(f"{label} property schema is invalid")
                         children.append(child)
-                    elif constraint.get("additionalProperties") is False:
+                        continue
+                    additional = constraint.get("additionalProperties", True)
+                    if additional is False:
                         raise ValueError(f"{label} path does not exist")
+                    if isinstance(additional, dict):
+                        children.append(additional)
+                    elif additional is not True:
+                        raise ValueError(
+                            f"{label} additionalProperties schema is invalid"
+                        )
                 if not children:
                     raise ValueError(f"{label} path does not exist")
                 if source and not required:
@@ -636,6 +638,182 @@ def test_ref_sibling_required_is_conjoined_independently_from_properties() -> No
     closed_sibling["properties"]["data"]["additionalProperties"] = False
     with pytest.raises(ValueError, match="does not exist"):
         validate_schema_reference(closed_sibling, "data.value", target, "value")
+
+
+@pytest.mark.parametrize("additional_first", [False, True])
+def test_object_conjunction_applies_additional_property_schema_in_both_orders(
+    additional_first: bool,
+) -> None:
+    declared = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+    guarded = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {"type": "string", "pattern": "^safe$"},
+    }
+    first, sibling = (guarded, declared) if additional_first else (declared, guarded)
+    source = {
+        "$defs": {"First": first},
+        "$ref": "#/$defs/First",
+        **sibling,
+    }
+    target = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+
+    with pytest.raises(ValueError, match="unsupported schema keyword"):
+        validate_schema_reference(source, "token", target, "token")
+
+
+def test_object_conjunction_combines_compatible_additional_property_schema() -> None:
+    source = {
+        "$defs": {
+            "Declared": {
+                "type": "object",
+                "properties": {"token": {"type": "string", "maxLength": 10}},
+                "required": ["token"],
+            }
+        },
+        "$ref": "#/$defs/Declared",
+        "properties": {},
+        "additionalProperties": {"type": "string", "maxLength": 5},
+    }
+    target = {
+        "type": "object",
+        "properties": {"token": {"type": "string", "maxLength": 5}},
+        "required": ["token"],
+    }
+
+    validate_schema_reference(source, "token", target, "token")
+
+    too_narrow = copy.deepcopy(target)
+    too_narrow["properties"]["token"]["maxLength"] = 4
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_schema_reference(source, "token", too_narrow, "token")
+
+
+def test_target_conjunction_additional_property_schema_narrows_assignment() -> None:
+    source = {
+        "type": "object",
+        "properties": {"token": {"type": "string", "maxLength": 10}},
+        "required": ["token"],
+    }
+    target = {
+        "$defs": {
+            "Declared": {
+                "type": "object",
+                "properties": {"token": {"type": "string", "maxLength": 10}},
+                "required": ["token"],
+            }
+        },
+        "$ref": "#/$defs/Declared",
+        "properties": {},
+        "additionalProperties": {"type": "string", "maxLength": 5},
+    }
+
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_schema_reference(source, "token", target, "token")
+
+    source["properties"]["token"]["maxLength"] = 5
+    validate_schema_reference(source, "token", target, "token")
+
+
+@pytest.mark.parametrize("additional", [True, None])
+def test_object_conjunction_allows_true_or_absent_additional_properties(
+    additional: bool | None,
+) -> None:
+    sibling: dict[str, Any] = {"type": "object", "properties": {}}
+    if additional is not None:
+        sibling["additionalProperties"] = additional
+    source = {
+        "$defs": {
+            "Declared": {
+                "type": "object",
+                "properties": {"token": {"type": "string"}},
+                "required": ["token"],
+            }
+        },
+        "$ref": "#/$defs/Declared",
+        **sibling,
+    }
+    target = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+
+    validate_schema_reference(source, "token", target, "token")
+
+
+def test_object_conjunction_rejects_false_additional_properties() -> None:
+    source = {
+        "$defs": {
+            "Declared": {
+                "type": "object",
+                "properties": {"token": {"type": "string"}},
+                "required": ["token"],
+            }
+        },
+        "$ref": "#/$defs/Declared",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    target = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_schema_reference(source, "token", target, "token")
+
+
+@pytest.mark.parametrize("placement", ["property", "additionalProperties"])
+@pytest.mark.parametrize("keyword", ["pattern", "enum", "const"])
+def test_nested_property_assertions_cannot_bypass_fail_closed(
+    keyword: str, placement: str,
+) -> None:
+    narrowed: dict[str, Any] = {"type": "string", keyword: "^safe$"}
+    if keyword == "enum":
+        narrowed[keyword] = ["safe"]
+    elif keyword == "const":
+        narrowed[keyword] = "safe"
+    nested = {
+        "anyOf": [
+            {"$ref": "#/$defs/Narrowed"},
+            {"type": "string"},
+        ]
+    }
+    sibling = (
+        {"properties": {"token": nested}}
+        if placement == "property"
+        else {"properties": {}, "additionalProperties": nested}
+    )
+    source = {
+        "$defs": {
+            "Declared": {
+                "type": "object",
+                "properties": {"token": {"type": "string"}},
+                "required": ["token"],
+            },
+            "Narrowed": narrowed,
+        },
+        "$ref": "#/$defs/Declared",
+        **sibling,
+    }
+    target = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+
+    with pytest.raises(ValueError, match="unsupported schema keyword"):
+        validate_schema_reference(source, "token", target, "token")
 
 
 async def test_identifier_reuse_paths_and_types_match_live_tool_schemas(

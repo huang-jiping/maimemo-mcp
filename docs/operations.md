@@ -192,7 +192,11 @@ Schema 解析路径与 `$ref`、`anyOf`、对象和数组，并校验 JSON 类�
 annotation 可忽略；type、format、required、properties、anyOf、$ref 和可证明的字符串
 minLength/maxLength 参与判断。enum、const、pattern、数值/数组/对象收窄断言、终端
 additionalProperties 及未知关键字均 fail closed。`$defs`/`definitions`/`components` 只作为
-引用资源容器，不当成实例断言，也不能复制工具 Schema 到语料来形成自证。Tunnel 连通后，
+引用资源容器，不当成实例断言，也不能复制工具 Schema 到语料来形成自证。解析对象路径时，
+每个 conjunction 分支都必须参与：若属性不在该分支的 `properties`，则
+`additionalProperties: false` 拒绝，Schema 形式与其他属性 Schema 合取并完整经过关键字
+白名单，`true` 或缺省不增加约束；其结果不受 `$ref` sibling 或 `anyOf` 分支顺序影响。
+Tunnel 连通后，
 应逐项观察并只记录：用例 ID、工具名、参数字段名或参数类别、
 结果类别、警告代码、是否要求用户确认。不要记录参数值中的个人标识符或任何结果正文。
 

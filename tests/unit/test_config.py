@@ -38,6 +38,45 @@ def test_validation_errors_hide_all_supplied_secret_values(invalid: bool) -> Non
     assert private_url not in str(caught.value)
 
 
+def test_malformed_database_url_is_rejected_without_retaining_secret_context(
+    environ: dict[str, str],
+) -> None:
+    import traceback
+
+    private_url = "postgresql+psycopg://u:prefix@host:LEAK@localhost/d"
+    environ["MAIMEMO_DATABASE_URL"] = private_url
+
+    with pytest.raises(ValidationError) as caught:
+        Settings.load(environ)
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "LEAK" not in formatted
+    assert private_url not in formatted
+    assert caught.value.errors(include_input=False, include_context=False, include_url=False) == [
+        {
+            "type": "value_error",
+            "loc": ("database_url",),
+            "msg": "Value error, Invalid database URL",
+        }
+    ]
+
+
+def test_database_url_requires_async_psycopg_driver(environ: dict[str, str]) -> None:
+    environ["MAIMEMO_DATABASE_URL"] = "postgresql://u:secret@localhost/d"
+
+    with pytest.raises(ValidationError) as caught:
+        Settings.load(environ)
+
+    errors = caught.value.errors(include_input=False, include_context=False, include_url=False)
+    assert errors == [
+        {
+            "type": "value_error",
+            "loc": ("database_url",),
+            "msg": "Value error, database_url must use postgresql+psycopg",
+        }
+    ]
+
+
 def test_read_maimemo_token_strips_trailing_newline(environ: dict[str, str]) -> None:
     Path(environ["MAIMEMO_TOKEN_FILE"]).write_text("synthetic-token\r\n", encoding="utf-8")
     token = Settings.load(environ).read_maimemo_token()

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 from _postgres_cli import PostgresTools, database_url_from_env, resolved_dump_input
 from sqlalchemy.engine import URL
+
+from maimemo_mcp.database_url import DatabaseUrlError
 
 # PostgreSQL identifiers are at most 63 bytes.  The fixed ASCII prefix is 16
 # bytes, so cap the suffix at 47 rather than relying on server-side truncation.
@@ -155,7 +158,11 @@ def _restore_new_database(
 def main() -> int:
     args = parser().parse_args()
     backup = resolved_dump_input(args.backup)
-    admin_url = database_url_from_env(args.admin_url_env)
+    try:
+        admin_url = database_url_from_env(args.admin_url_env)
+    except DatabaseUrlError:
+        print("configuration_error database_url:invalid", file=sys.stderr)
+        return 2
     assert admin_url.database is not None
     _validate_target(args.target_database, args.confirm_disposable_target, admin_url.database)
     tools = PostgresTools(args.pg_bin_dir, args.docker_container)

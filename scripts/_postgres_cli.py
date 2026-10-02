@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL
+
+from maimemo_mcp.database_url import DatabaseUrlError, parse_database_url
 
 _CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -18,15 +20,12 @@ _CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 def database_url_from_env(name: str) -> URL:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
-        raise ValueError(f"{name} must name a PostgreSQL database URL")
-    try:
-        url = make_url(raw)
-    except Exception as exc:
-        raise ValueError(f"{name} is not a valid database URL") from exc
+        raise DatabaseUrlError(f"{name} must name a PostgreSQL database URL")
+    url = parse_database_url(raw)
     if url.get_backend_name() != "postgresql":
-        raise ValueError(f"{name} must use PostgreSQL")
+        raise DatabaseUrlError(f"{name} must use PostgreSQL")
     if not url.database or url.database in {"template0", "template1"}:
-        raise ValueError(f"{name} must name a non-template database")
+        raise DatabaseUrlError(f"{name} must name a non-template database")
     return url.set(drivername="postgresql")
 
 

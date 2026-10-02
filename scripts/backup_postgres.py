@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from _postgres_cli import PostgresTools, database_url_from_env, resolved_new_dump_path
+
+from maimemo_mcp.database_url import DatabaseUrlError
 
 
 def parser() -> argparse.ArgumentParser:
@@ -27,7 +30,11 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     output = resolved_new_dump_path(args.output)
-    database_url = database_url_from_env(args.database_url_env)
+    try:
+        database_url = database_url_from_env(args.database_url_env)
+    except DatabaseUrlError:
+        print("configuration_error database_url:invalid", file=sys.stderr)
+        return 2
     tools = PostgresTools(args.pg_bin_dir, args.docker_container)
     tools.validate("pg_dump")
     dsn, environment = tools.database_argument(database_url)

@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from maimemo_mcp.database_url import parse_database_url
+
 _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
@@ -40,6 +42,12 @@ class Settings(BaseModel):
     @property
     def records_interval(self) -> timedelta:
         return timedelta(minutes=self.records_interval_minutes)
+
+    @field_validator("database_url")
+    @classmethod
+    def _database_url(cls, value: str) -> str:
+        parse_database_url(value, required_driver="postgresql+psycopg")
+        return value
 
     @field_validator(
         "token_file", "token_fingerprint_key_file", "openapi_drift_state_file", mode="before"

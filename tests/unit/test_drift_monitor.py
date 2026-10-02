@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,3 +124,57 @@ async def test_streamed_response_cannot_exceed_size_limit() -> None:
     )) as client:
         with pytest.raises(drift.SpecReadError, match="size_limit"):
             await drift.fetch_openapi(client, "https://example.test/spec")
+
+
+async def test_cpu_check_is_isolated_and_cancellation_joins_its_owned_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    pinned, state = tmp_path / "pinned.yaml", tmp_path / "state.json"
+    pinned.write_bytes(SPEC)
+    started, heartbeat, finished = threading.Event(), threading.Event(), threading.Event()
+    threads: list[int] = []
+    main_thread = threading.get_ident()
+    tasks_before = asyncio.all_tasks()
+    real_compare = drift.compare_openapi
+
+    def expensive_check(pinned: bytes, current: bytes, **kwargs: object) -> drift.DriftReport:
+        threads.append(threading.get_ident())
+        started.set()
+        try:
+            # The sampling heartbeat must run while CPU work is in progress.
+            # A timeout makes the old synchronous implementation fail without hanging.
+            assert heartbeat.wait(0.5)
+            stop = kwargs.get("stop")
+            assert isinstance(stop, threading.Event)
+            assert stop.wait(0.5)
+            # Preserve the actual parser's cancellation checkpoint, not a fake error.
+            return real_compare(pinned, current, stop=stop)
+        finally:
+            finished.set()
+
+    async def collection_heartbeat() -> None:
+        while not started.is_set():
+            await asyncio.sleep(0)
+        heartbeat.set()
+
+    monkeypatch.setattr(drift, "compare_openapi", expensive_check)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, content=SPEC),
+    )) as client:
+        task = asyncio.create_task(OpenApiDriftMonitor(
+            state, pinned_file=pinned, client=client,
+        ).run_forever())
+        pulse = asyncio.create_task(collection_heartbeat())
+        try:
+            await asyncio.wait_for(pulse, 1)
+            assert not finished.is_set(), "CPU work blocked the sampling heartbeat"
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            await pulse
+        assert threads[0] != main_thread
+        assert finished.is_set(), "monitor exited before its CPU task stopped"
+        assert asyncio.all_tasks() == tasks_before
+        assert not state.exists()

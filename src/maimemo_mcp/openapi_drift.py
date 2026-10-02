@@ -10,9 +10,11 @@ import sys
 import tempfile
 import urllib.request
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from typing import Any, Literal
 
 import httpx
@@ -21,12 +23,83 @@ import yaml
 Severity = Literal["none", "informational", "high"]
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+MAX_STRUCTURE_ITEMS = 20000
+MAX_STRUCTURE_DEPTH = 64
+MAX_WORK_ITEMS = 50000
 DEFAULT_PINNED_FILE = Path(__file__).resolve().parents[2] / "openapi" / "maimemo-api.yaml"
 DEFAULT_REMOTE_URL = "https://open.maimemo.com/api_bundle.yaml"
 
 
 class SpecReadError(ValueError):
     """The supplied bytes are not a readable OpenAPI mapping."""
+
+
+@dataclass
+class _WorkBudget:
+    stop: Event | None = None
+    remaining: int = MAX_WORK_ITEMS
+
+    def consume(self, count: int = 1) -> None:
+        if self.stop is not None and self.stop.is_set():
+            raise SpecReadError("check_cancelled")
+        self.remaining -= count
+        if self.remaining < 0:
+            raise SpecReadError("work_limit")
+
+
+_WORK_BUDGET: ContextVar[_WorkBudget | None] = ContextVar("drift_work_budget", default=None)
+
+
+def _consume(count: int = 1) -> None:
+    budget = _WORK_BUDGET.get()
+    if budget is not None:
+        budget.consume(count)
+
+
+class _BoundedLoader(yaml.SafeLoader):
+    """Bound composition before construction can expand YAML merge aliases."""
+
+    def __init__(self, document: bytes) -> None:
+        super().__init__(document)
+        self._depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> yaml.Node | None:
+        _consume()
+        self._depth += 1
+        try:
+            if self._depth > MAX_STRUCTURE_DEPTH:
+                raise SpecReadError("structure_limit")
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+
+def _validate_structure(
+    node: yaml.Node, memo: dict[int, tuple[int, int]], active: set[int],
+) -> tuple[int, int]:
+    """Measure expanded DAG size without expanding it, rejecting cycles and alias bombs."""
+    _consume()
+    identity = id(node)
+    if identity in active:
+        raise SpecReadError("structure_limit")
+    if identity in memo:
+        return memo[identity]
+    active.add(identity)
+    size, depth = 1, 1
+    children: list[yaml.Node] = []
+    if isinstance(node, yaml.MappingNode):
+        children = [child for pair in node.value for child in pair]
+    elif isinstance(node, yaml.SequenceNode):
+        children = node.value
+    for child in children:
+        child_size, child_depth = _validate_structure(child, memo, active)
+        size += child_size
+        depth = max(depth, child_depth + 1)
+        if size > MAX_STRUCTURE_ITEMS or depth > MAX_STRUCTURE_DEPTH:
+            raise SpecReadError("structure_limit")
+    active.remove(identity)
+    memo[identity] = size, depth
+    return size, depth
 
 
 @dataclass(frozen=True)
@@ -67,6 +140,7 @@ class Operation:
 def _mapping(value: object, *, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise SpecReadError(f"{label} must be a mapping")
+    _consume(1 + len(value))
     return {str(key): item for key, item in value.items()}
 
 
@@ -74,7 +148,16 @@ def _load(document: bytes) -> Mapping[str, Any]:
     if len(document) > MAX_DOCUMENT_BYTES:
         raise SpecReadError("size_limit")
     try:
-        parsed = yaml.safe_load(document)
+        loader = _BoundedLoader(document)
+        try:
+            node = loader.get_single_node()
+            if node is None:
+                parsed = None
+            else:
+                _validate_structure(node, {}, set())
+                parsed = loader.construct_document(node)
+        finally:
+            loader.dispose()
     except (UnicodeDecodeError, yaml.YAMLError) as exc:
         raise SpecReadError("OpenAPI document is not valid UTF-8 YAML") from exc
     root = _mapping(parsed, label="OpenAPI document")
@@ -106,7 +189,11 @@ def _schema_fields(
     prefix: str = "",
     ancestor_required: bool = True,
     seen: frozenset[str] = frozenset(),
+    depth: int = 0,
 ) -> tuple[set[str], set[str]]:
+    _consume()
+    if depth >= MAX_STRUCTURE_DEPTH:
+        raise SpecReadError("work_limit")
     value = _mapping(schema, label="schema")
     reference = value.get("$ref")
     if isinstance(reference, str):
@@ -128,6 +215,7 @@ def _schema_fields(
             prefix=qualified,
             ancestor_required=field_required,
             seen=seen,
+            depth=depth + 1,
         )
         required.update(child_required)
         optional.update(child_optional)
@@ -139,6 +227,7 @@ def _schema_fields(
             prefix=f"{prefix}[]" if prefix else "[]",
             ancestor_required=ancestor_required,
             seen=seen,
+            depth=depth + 1,
         )
         required.update(child_required)
         optional.update(child_optional)
@@ -151,6 +240,7 @@ def _schema_fields(
                 prefix=prefix,
                 ancestor_required=ancestor_required,
                 seen=seen,
+                depth=depth + 1,
             )
             required.update(child_required)
             optional.update(child_optional)
@@ -165,6 +255,7 @@ def _schema_fields(
                 prefix=prefix,
                 ancestor_required=ancestor_required,
                 seen=seen,
+                depth=depth + 1,
             )
             for branch in branches
         ]
@@ -292,7 +383,15 @@ def _change(
     return DriftChange(severity, kind, operation, detail)
 
 
-def compare_openapi(pinned: bytes, current: bytes) -> DriftReport:
+def compare_openapi(pinned: bytes, current: bytes, *, stop: Event | None = None) -> DriftReport:
+    token = _WORK_BUDGET.set(_WorkBudget(stop))
+    try:
+        return _compare_openapi(pinned, current)
+    finally:
+        _WORK_BUDGET.reset(token)
+
+
+def _compare_openapi(pinned: bytes, current: bytes) -> DriftReport:
     pinned_operations = _operations(_load(pinned))
     current_operations = _operations(_load(current))
     changes: list[DriftChange] = []

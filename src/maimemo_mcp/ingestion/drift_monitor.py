@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 import httpx
 
@@ -45,7 +46,7 @@ class OpenApiDriftMonitor:
             try:
                 pinned = openapi_drift.read_pinned(self.pinned_file)
                 current = await openapi_drift.fetch_openapi(client, self.remote_url)
-                report = openapi_drift.compare_openapi(pinned, current)
+                report = await self._compare(pinned, current)
                 openapi_drift._write_state(self.state_file, report, self.clock())
             except Exception as error:
                 # Failed checks leave the last successful state untouched; its age
@@ -58,3 +59,26 @@ class OpenApiDriftMonitor:
                 log_event(logger, "openapi_drift_check", status=report.severity)
             # CancelledError is deliberately not caught, both during fetch and sleep.
             await self.sleep(CHECK_INTERVAL_SECONDS)
+
+    @staticmethod
+    async def _compare(pinned: bytes, current: bytes) -> openapi_drift.DriftReport:
+        stop = Event()
+        task = asyncio.create_task(asyncio.to_thread(
+            openapi_drift.compare_openapi, pinned, current, stop=stop,
+        ))
+        cancelled = False
+        # Keep the CPU task owned until its cooperative budget checks terminate it.
+        # Shielding alone would let cancellation orphan a running executor thread.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+                stop.set()
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()  # Retrieve any error, without logging its input or text.
+            raise asyncio.CancelledError
+        return task.result()

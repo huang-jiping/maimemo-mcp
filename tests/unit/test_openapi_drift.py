@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from textwrap import dedent, indent
+from time import perf_counter
 
 import pytest
 
@@ -387,3 +388,41 @@ def test_cli_failure_does_not_print_exception_text_or_custom_class_name(
     assert json.loads(capsys.readouterr().out) == {
         "severity": "unreadable", "error_class": "UnexpectedError",
     }
+
+
+@pytest.mark.parametrize("links", ["aliases", "references", "merges"])
+def test_small_exponential_schema_graph_is_rejected_with_fixed_safe_error(links: str) -> None:
+    if links == "aliases":
+        levels = ["  A0: &a0 {type: object}"]
+        levels += [f"  A{i}: &a{i} {{allOf: [*a{i-1}, *a{i-1}]}}" for i in range(1, 19)]
+        schema = "*a18"
+    elif links == "merges":
+        levels = ["  A0: &a0 {type: object}"]
+        levels += [f"  A{i}: &a{i} {{<<: [*a{i-1}, *a{i-1}]}}" for i in range(1, 19)]
+        schema = "*a18"
+    else:
+        levels = ["  A0: {type: object}"]
+        levels += [
+            f"  A{i}: {{allOf: [{{$ref: '#/x/A{i-1}'}}, {{$ref: '#/x/A{i-1}'}}]}}"
+            for i in range(1, 19)
+        ]
+        schema = "{$ref: '#/x/A18'}"
+    document = (
+        "openapi: 3.0.0\nx:\n" + "\n".join(levels) + "\npaths:\n"
+        "  /test:\n    get:\n      operationId: getTest\n      responses:\n"
+        "        '200':\n          content:\n            application/json:\n"
+        f"              schema: {schema}\n"
+    ).encode()
+    assert len(document) < 2048
+    started = perf_counter()
+    with pytest.raises(drift.SpecReadError, match="^(structure_limit|work_limit)$") as failure:
+        compare_openapi(BASE, document)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+    assert perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize("extension", ["[" * 80 + "0" + "]" * 80, "&a [*a]"])
+def test_deep_or_recursive_yaml_is_rejected_before_schema_traversal(extension: str) -> None:
+    document = f"openapi: 3.0.0\npaths: {{}}\nx: {extension}\n".encode()
+    with pytest.raises(drift.SpecReadError, match="^structure_limit$"):
+        compare_openapi(BASE, document)

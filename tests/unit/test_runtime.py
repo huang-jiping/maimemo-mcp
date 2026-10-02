@@ -358,3 +358,50 @@ def test_worker_waits_for_cancel_cleanup_but_never_collects_after_deadline(
     assert time.monotonic() - started >= cancellation_elapsed + 0.04
     assert not collect.called
     assert capsys.readouterr().err == "startup_error schema_wait_timeout\n"
+
+
+def test_worker_stops_when_cancel_cleanup_becomes_schema_unavailable(
+    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+
+    class MemoryConnection:
+        async def __aenter__(self) -> "MemoryConnection":
+            events.append("probe")
+            return self
+
+        async def execute(self, statement: object) -> Mock:
+            if events.count("probe") == 1:
+                await asyncio.sleep(60)
+            # A subsequent probe would succeed, so a broken retry terminates rather
+            # than hanging the regression test. The real schema gate consumes this.
+            result = Mock()
+            result.one.return_value = ("alembic_version", "schema_metadata")
+            result.scalars.return_value.all.return_value = ["0004"]
+            return result
+
+        async def __aexit__(self, kind: object, error: object, trace: object) -> None:
+            if isinstance(error, asyncio.CancelledError):
+                events.append("cancel")
+                await asyncio.sleep(0.05)
+                events.append("cleanup_failed")
+                raise OSError("SYNTHETIC_CONNECTION_CLEANUP_SECRET")
+
+    class MemoryEngine:
+        def connect(self) -> MemoryConnection:
+            return MemoryConnection()
+
+        async def dispose(self) -> None:
+            events.append("disposed")
+
+    engine = MemoryEngine()
+    collect = Mock()
+    monkeypatch.setattr(runtime, "create_async_engine_from_settings", lambda settings: engine)
+    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    # Keep require_current_schema and inspect_schema real: the cleanup OSError is
+    # converted to UNAVAILABLE, then to SchemaNotReadyError by the schema gate.
+    assert runtime.main(["worker"]) != 0
+    assert events == ["probe", "cancel", "cleanup_failed", "disposed"]
+    assert not collect.called
+    assert capsys.readouterr().err == "startup_error schema_wait_timeout\n"

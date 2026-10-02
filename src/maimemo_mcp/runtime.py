@@ -51,11 +51,15 @@ async def _run_worker(settings: Settings) -> None:
             # This is the cancellation decision deadline. Await the driver's bounded
             # cleanup, even if it finishes later, and never collect after expiration.
             async with asyncio.timeout(settings.schema_wait_timeout_seconds) as deadline:
-                while True:
+                while not deadline.expired():
                     try:
                         await require_current_schema(engine, expected)
                         break
                     except SchemaNotReadyError:
+                        # Cleanup can turn cancellation into a normal schema error.
+                        # An expired timeout will not cancel a second probe.
+                        if deadline.expired():
+                            break
                         await asyncio.sleep(0.25)
         except TimeoutError:
             pass

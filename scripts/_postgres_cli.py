@@ -88,22 +88,28 @@ class PostgresTools:
         docker = shutil.which("docker")
         if docker is None:
             raise FileNotFoundError("Docker is required for --docker-container test mode")
-        command = [docker, "exec"]
+        # Ask Docker to inherit the named variable; never include its value in argv.
+        command = [docker, "exec", "--env", "PGPASSWORD"]
         if interactive:
             command.append("-i")
         command.extend([self.docker_container, name])
         return command
 
     def database_argument(self, url: URL) -> tuple[str, dict[str, str]]:
+        if any(key.casefold() in {"password", "sslpassword", "passfile"} for key in url.query):
+            raise ValueError("Credential query parameters are not supported")
         environment = dict(os.environ)
-        if self.docker_container is not None:
-            # Test-only mode targets a disposable local container. Production native
-            # invocations keep passwords out of argv via PGPASSWORD below.
-            return url.render_as_string(hide_password=False), environment
         password = url.password
         if password is not None:
             environment["PGPASSWORD"] = password
-        safe_url = url.set(password=None).render_as_string(hide_password=False)
+        safe_url = URL.create(
+            drivername=url.drivername,
+            username=url.username,
+            host=url.host,
+            port=url.port,
+            database=url.database,
+            query=url.query,
+        ).render_as_string(hide_password=False)
         return safe_url, environment
 
     def validate(self, *names: str) -> None:

@@ -22,7 +22,7 @@ from maimemo_mcp.maimemo_client.models import (
 from maimemo_mcp.mcp_server.dependencies import Dependencies
 from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
 from maimemo_mcp.mcp_server.tools.common import Clock
-from maimemo_mcp.storage.repositories import DataHealth, StudyHistoryRepository
+from maimemo_mcp.storage.repositories import DataHealth
 
 ToolContext = Context[Dependencies, Any]
 LOCAL_READ = ToolAnnotations(
@@ -220,7 +220,10 @@ def score_metadata(meta: ToolMeta, words: list[WeakWordView], health: DataHealth
             ):
                 if code in word.reason_codes:
                     incomplete(meta, code)
-                    if state == Completeness.STALE:
+                    if (
+                        state == Completeness.STALE
+                        and meta.completeness != Completeness.UNAVAILABLE
+                    ):
                         meta.completeness = state
 
 
@@ -248,7 +251,7 @@ def analysis_metadata(meta: ToolMeta, state: WeaknessAnalysisState, health: Data
         meta.data_through = min(meta.data_through, state.data_through.astimezone(SHANGHAI).date())
     for code in state.quality_codes:
         incomplete(meta, code)
-        if code == "DATA_QUALITY_STALE":
+        if code == "DATA_QUALITY_STALE" and meta.completeness != Completeness.UNAVAILABLE:
             meta.completeness = Completeness.STALE
 
 
@@ -262,7 +265,7 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         deps, at = ctx.request_context.lifespan_context, utc_instant(clock())
         day = at.astimezone(SHANGHAI).date()
         async with deps.sessions() as session:
-            repo = StudyHistoryRepository(session)
+            repo = deps.weakness.repository(session)
             health = await repo.get_data_health(at)
             progress = await repo.daily_progress(day, at)
             today = await repo.latest_today_words(day, at)
@@ -311,7 +314,7 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         """
         deps, at = ctx.request_context.lifespan_context, utc_instant(clock())
         async with deps.sessions() as session:
-            repo = StudyHistoryRepository(session)
+            repo = deps.weakness.repository(session)
             health = await repo.get_data_health(at)
             words = await repo.local_words(request.spelling, at)
             records = {word.id: row for word, row in await repo.latest_records(at)}
@@ -372,7 +375,7 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         inputs = request.model_dump(exclude_none=True) if request else {}
         query = WeakWordQuery(**{**inputs, "as_of": inputs.get("as_of", at)})
         async with deps.sessions() as session:
-            repo = StudyHistoryRepository(session)
+            repo = deps.weakness.repository(session)
             health = await repo.get_data_health(query.as_of)
         state = await deps.weakness.get_analysis_state(query.as_of)
         words = [weak_view(word) for word in await deps.weakness.list_weak_words(query)]
@@ -394,7 +397,7 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         day = at.astimezone(SHANGHAI).date()
         through = day + timedelta(days=request.days if request else 7)
         async with deps.sessions() as session:
-            repo = StudyHistoryRepository(session)
+            repo = deps.weakness.repository(session)
             health = await repo.get_data_health(at)
             records = await repo.latest_records(at)
         meta = local_meta(health, at, tasks=("records",))
@@ -431,6 +434,6 @@ def register(server: MCPServer[Dependencies], clock: Clock) -> None:
         """
         deps, at = ctx.request_context.lifespan_context, utc_instant(clock())
         async with deps.sessions() as session:
-            health = await StudyHistoryRepository(session).get_data_health(at)
+            health = await deps.weakness.repository(session).get_data_health(at)
         meta = local_meta(health, at)
         return ToolEnvelope(data=replace(health, warnings=meta.warnings), meta=meta)

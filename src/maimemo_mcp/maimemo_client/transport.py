@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -33,6 +33,26 @@ from maimemo_mcp.maimemo_client.rate_limit import utc_now
 T = TypeVar("T", bound=BaseModel)
 BASE_URL = "https://open.maimemo.com/open"
 logger = logging.getLogger(__name__)
+
+
+def encode_path_id(identity: str) -> str:
+    """Prevent HTTP dot-segment normalization while preserving ordinary ID encoding."""
+    return "%2E" * len(identity) if identity in (".", "..") else quote(identity, safe="")
+
+
+def _redact_credential(value: Any, credential: str) -> Any:
+    """A credential echoed by an invalid upstream response never earns DB storage."""
+    if isinstance(value, str):
+        return value.replace(credential, "[REDACTED]")
+    if isinstance(value, list):
+        return [_redact_credential(item, credential) for item in value]
+    if isinstance(value, dict):
+        return {
+            key.replace(credential, "[REDACTED]"): _redact_credential(item, credential)
+            for key, item in value.items()
+        }
+    return value
+
 
 _DYNAMIC_ENDPOINTS = (
     (
@@ -66,6 +86,39 @@ class HttpAttemptObservation:
     count: int = 0
     _owner_task_id: int = field(default=0, repr=False)
     _active: bool = field(default=True, repr=False)
+
+
+@dataclass(frozen=True, repr=False)
+class FailedSchemaResponse:
+    endpoint: str
+    request: dict[str, Any]
+    raw_response: Any
+    fetched_at: datetime
+
+
+@dataclass(repr=False)
+class SchemaFailureCapture:
+    responses: list[FailedSchemaResponse] = field(default_factory=list)
+    owner_task_id: int = field(default=0, repr=False)
+    active: bool = field(default=True, repr=False)
+
+
+_schema_failure_capture: ContextVar[SchemaFailureCapture | None] = ContextVar(
+    "maimemo_worker_schema_failure_capture", default=None
+)
+
+
+@contextmanager
+def capture_worker_schema_failures() -> Iterator[SchemaFailureCapture]:
+    """Private, task-scoped handoff; raw data never travels through exceptions or logs."""
+    capture = SchemaFailureCapture(owner_task_id=id(asyncio.current_task()))
+    token = _schema_failure_capture.set(capture)
+    try:
+        yield capture
+    finally:
+        capture.active = False
+        capture.responses.clear()
+        _schema_failure_capture.reset(token)
 
 
 _attempt_observation: ContextVar[HttpAttemptObservation | None] = ContextVar(
@@ -297,11 +350,25 @@ class MaimemoTransport:
                 )
                 raise InvalidRequestError("API request rejected")
             parsed = None
+            decoded = False
+            raw: Any = None
             try:
-                parsed = response_type.model_validate(response.json())
+                raw = response.json()
+                decoded = True
+                parsed = response_type.model_validate(raw)
             except (ValueError, ValidationError):
                 pass
             if parsed is None:
+                capture = _schema_failure_capture.get()
+                if (
+                    decoded and capture is not None and capture.active
+                    and capture.owner_task_id == id(asyncio.current_task())
+                ):
+                    capture.responses.append(FailedSchemaResponse(
+                        path, {"method": method, "params": dict(params or {}),
+                               "json": dict(json or {})},
+                        _redact_credential(raw, self._token.get_secret_value()), self._clock()
+                    ))
                 log_event(
                     logger,
                     "upstream_request",

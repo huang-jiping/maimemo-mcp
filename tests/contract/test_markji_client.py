@@ -123,6 +123,38 @@ async def invoke(client: MarkjiClient, operation: str) -> BaseModel:
     return await client.get_card("deck-synthetic", "card-synthetic")
 
 
+@pytest.mark.parametrize("dot,encoded", [(".", "%2E"), ("..", "%2E%2E")])
+@pytest.mark.parametrize("operation,position", [
+    ("get_deck", 0), ("list_chapters", 0),
+    ("get_chapter", 0), ("get_chapter", 1), ("get_card", 0), ("get_card", 1),
+])
+async def test_exact_dot_ids_retain_the_final_markji_operation_path(
+    dot: str, encoded: str, operation: str, position: int,
+) -> None:
+    ids = ["deck-synthetic"]
+    if operation in ("get_chapter", "get_card"):
+        ids.append("chapter-synthetic" if operation == "get_chapter" else "card-synthetic")
+    ids[position] = dot
+    wanted_ids = list(ids)
+    wanted_ids[position] = encoded
+    wanted = "/open/api/v1/markji/decks/" + wanted_ids[0]
+    if operation == "list_chapters":
+        wanted += "/chapters"
+    if operation in ("get_chapter", "get_card"):
+        wanted += ("/chapters/" if operation == "get_chapter" else "/cards/") + wanted_ids[1]
+    paths = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.raw_path)
+        return httpx.Response(200, json=FIXTURES[operation])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        transport = MaimemoTransport(SecretStr("synthetic-token"), SecretStr("synthetic-key"),
+                                    NoWaitLimiter(), client=http)
+        await getattr(MarkjiClient(transport), operation)(*ids)
+    assert paths == [wanted.encode("ascii")]
+
+
 @pytest.mark.parametrize("operation,method,path,query,body,model,missing", CASES)
 async def test_operation_contract(
     operation: str,

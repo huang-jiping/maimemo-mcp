@@ -56,7 +56,7 @@ async def test_0003_round_trip_preserves_unscheduled_runs(
     async with database.connect() as connection:
         assert await connection.scalar(text("SELECT id FROM ingestion_run")) == identity
         assert await connection.scalar(text("SELECT scheduled_at FROM ingestion_run")) is None
-        assert await connection.scalar(text("SELECT schema_version FROM schema_metadata")) == "0003"
+        assert await connection.scalar(text("SELECT schema_version FROM schema_metadata")) == "0004"
 
 
 async def test_0003_downgrade_rejects_losing_scheduled_identity(
@@ -74,5 +74,5 @@ async def test_0003_downgrade_rejects_losing_scheduled_identity(
     with pytest.raises(DataError, match="scheduled"):
         await asyncio.to_thread(command.downgrade, alembic_config, "0002")
     async with database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
         assert await connection.scalar(text("SELECT count(*) FROM ingestion_run")) == 1

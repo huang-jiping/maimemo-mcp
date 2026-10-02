@@ -188,18 +188,23 @@ async def test_cutoff_recovers_first_snapshot_time_after_later_duplicate_refresh
     database: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(database)
-    await seed(factory, AT - timedelta(hours=2), "FORGET", records=True)
-    await seed(factory, AT - timedelta(hours=1), "FAMILIAR", records=True)
+    await seed(factory, AT - timedelta(hours=2), "FORGET", tags=["STICKING"], records=True)
+    await seed(factory, AT - timedelta(hours=1), "FAMILIAR", tags=[], records=True)
     await seed(
-        factory, AT + timedelta(hours=1), "FORGET", records=True, last_study=AT - timedelta(hours=2)
+        factory, AT + timedelta(hours=1), "FORGET", tags=["STICKING"],
+        records=True, last_study=AT - timedelta(hours=2)
     )
     service = WeaknessService(factory)
     await service.recalculate(AT)
     result = (await service.list_weak_words(WeakWordQuery(as_of=AT)))[0]
     assert result.factors["recent_response"].value > 0
+    assert result.factors["sticking"].value == 0
+    assert result.evidence_through == AT - timedelta(hours=1)
     await service.recalculate(AT + timedelta(hours=1))
     latest = (await service.list_weak_words(WeakWordQuery(as_of=AT + timedelta(hours=1))))[0]
     assert latest.score > 0
+    assert latest.factors["sticking"].value == 1
+    assert latest.latest_snapshot_id != result.latest_snapshot_id
     assert latest.evidence_through == AT + timedelta(hours=1)
 
 

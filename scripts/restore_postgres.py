@@ -12,12 +12,13 @@ from sqlalchemy.engine import URL
 # PostgreSQL identifiers are at most 63 bytes.  The fixed ASCII prefix is 16
 # bytes, so cap the suffix at 47 rather than relying on server-side truncation.
 _DISPOSABLE_DATABASE = re.compile(r"^maimemo_restore_[a-z0-9_]{8,47}$")
-_EXPECTED_ALEMBIC_REVISION = "0003"
+_EXPECTED_ALEMBIC_REVISION = "0004"
 _CRITICAL_TABLES = (
     "alembic_version",
     "schema_metadata",
     "ingestion_run",
     "api_snapshot",
+    "failed_api_snapshot",
     "vocabulary",
     "daily_progress",
     "daily_word_observation",
@@ -89,6 +90,8 @@ FROM information_schema.tables
 WHERE table_schema = 'public' AND table_name IN ({tables});
 SELECT count(*) = 0 FROM api_snapshot
 WHERE length(request_hash) = 0 OR length(content_hash) = 0;
+SELECT count(*) = 0 FROM failed_api_snapshot
+WHERE length(request_hash) = 0 OR length(content_hash) = 0;
 SELECT count(*) = 0
 FROM learning_feedback_event child
 LEFT JOIN learning_feedback_event parent ON parent.id = child.retracted_event_id
@@ -97,7 +100,7 @@ SELECT (SELECT version_num FROM alembic_version) = '{_EXPECTED_ALEMBIC_REVISION}
    AND (SELECT schema_version FROM schema_metadata ORDER BY installed_at DESC LIMIT 1)
        = '{_EXPECTED_ALEMBIC_REVISION}';
 """
-    if _query(tools, database_url, sql) != ["t", "t", "t", "t"]:
+    if _query(tools, database_url, sql) != ["t", "t", "t", "t", "t"]:
         raise RuntimeError("Restored database failed critical integrity validation")
 
 

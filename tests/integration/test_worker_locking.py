@@ -85,7 +85,37 @@ class Upstream:
 
 def worker(database: AsyncEngine, upstream: Upstream, **kwargs: Any) -> Worker:
     service = StudyIngestionService(async_sessionmaker(database, expire_on_commit=False), upstream)
+    kwargs.setdefault("clock", lambda: AT)
     return Worker(service, schedule(), **kwargs)
+
+
+async def test_scoring_failure_rolls_back_history_and_success_slot_then_retries(
+    database: AsyncEngine,
+) -> None:
+    from maimemo_mcp.storage.models.analysis import WeaknessScore
+    from maimemo_mcp.storage.models.ingestion import ApiSnapshot
+    from maimemo_mcp.storage.models.learning import DailyWordObservation
+
+    job = ScheduledJob("today", SLOT)
+    async with database.begin() as connection:
+        await connection.execute(text(
+            "ALTER TABLE weakness_score ADD CONSTRAINT reject_synthetic_score CHECK (score < 0)"
+        ))
+    try:
+        result = await worker(database, Upstream()).run_job(job, AT)
+        assert result.status == "failed"
+        async with database.connect() as connection:
+            for model in (WeaknessScore, ApiSnapshot, DailyWordObservation):
+                assert await connection.scalar(select(func.count()).select_from(model)) == 0
+            assert list(await connection.scalars(select(IngestionRun.status))) == ["failed"]
+    finally:
+        async with database.begin() as connection:
+            await connection.execute(text(
+                "ALTER TABLE weakness_score DROP CONSTRAINT reject_synthetic_score"
+            ))
+    assert (await worker(database, Upstream()).run_job(job, AT)).status == "complete"
+    async with database.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(WeaknessScore)) == 1
 
 
 @pytest.mark.parametrize("task", ["today", "records"])

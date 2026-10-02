@@ -19,6 +19,7 @@ from maimemo_mcp.analysis.models import (
     WeaknessResult,
     WeakWordQuery,
 )
+from maimemo_mcp.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
 from maimemo_mcp.feedback.models import FeedbackQuery, normalize_spelling
 from maimemo_mcp.ingestion.hashing import stable_payload_hash
 from maimemo_mcp.ingestion.normalizers import (
@@ -182,8 +183,8 @@ class StudyHistoryRepository:
         session: AsyncSession,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-        today_interval: timedelta = timedelta(minutes=30),
-        records_interval: timedelta = timedelta(hours=2),
+        today_interval: timedelta = timedelta(minutes=DEFAULT_TODAY_INTERVAL_MINUTES),
+        records_interval: timedelta = timedelta(minutes=DEFAULT_RECORDS_INTERVAL_MINUTES),
     ) -> None:
         self.session = session
         self.clock = clock

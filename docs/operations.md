@@ -25,6 +25,9 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
    必须在 NAS 源文件 owner/group/ACL 上落实：
    <https://docs.docker.com/reference/compose-file/services/#secrets>。
 3. 创建 `var/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器以只读方式挂载。
+   Linux NAS 上确保目录允许 UID10001 遍历（例如 `mkdir -p var && chmod 0755 var`）。
+   状态 writer 每次原子发布均设为 `0644`，文件仅含公开规范 hash、时间和 severity；
+   不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `var/`。
 4. 设置 `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
    `postgresql+psycopg://user:password@host:5432/database` 形式。
 
@@ -71,6 +74,23 @@ docker compose logs --since 30m maimemo-mcp maimemo-worker
 日志只应包含 allowlist 字段。若发现凭据或个人正文，立即停止服务、轮换相关凭据并保留
 不含敏感值的事件时间和镜像 digest 用于调查。
 
+### 2.1 周期漂移检查与告警
+
+在 NAS 的任务调度器或受监督任务中每 6 小时执行一次，工作目录设为仓库的绝对路径；
+使用已锁定依赖的主机环境，命令为：
+
+```text
+uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml --remote https://open.maimemo.com/api_bundle.yaml --state-file var/openapi-drift.json
+```
+
+此任务只获取公开 OpenAPI，不需要 Token。退出码 0 表示 none/informational，1 表示 high，
+2 表示获取、解析或发布失败；调度器应把 1/2 交给现有 NAS 告警渠道，并记录安全 JSON 输出。
+消费者读取 `/health/status` 的 `drift_status`：high 需要优先排查；informational 安排规范
+审阅；unavailable/stale 检查任务运行记录、目录权限和发布路径。超过 26 小时未更新即 stale，
+因此应对连续失败或未运行报警。新解析失败不会伪造成功状态，旧文件会自然过期。
+合成 Linux 容器测试验证 root 发布后 UID10001 在连续两次原子替换后仍可读；实际 NAS ACL
+和定时任务是否运行仍需部署者检查。
+
 ## 3. 原生 NAS Tunnel Client 的本机访问
 
 默认 Compose 没有 `ports`。只有在 Tunnel Client 作为 NAS 主机上的受监督原生进程运行时，
@@ -94,6 +114,8 @@ Host 范围。
 生产环境优先在受控 NAS 主机安装与服务器主版本兼容的 `pg_dump`、`pg_restore`、
 `createdb` 和 `psql`。脚本只用参数数组、`shell=False`、`check=True` 调用工具；数据库
 URL 从环境变量读取，不接收 URL 命令行参数。
+原生工具的 URL 参数清除 password，只通过子进程 `PGPASSWORD` 传递。query 中的
+`password`、`sslpassword`、`passfile` 凭据形式被安全拒绝；不要把秘密写到 query 参数。
 
 ```text
 export MAIMEMO_BACKUP_DATABASE_URL='postgresql://app_user:...@db.internal:5432/maimemo'
@@ -126,7 +148,8 @@ python scripts/restore_postgres.py \
 ```
 
 脚本在恢复后验证关键表集合、非空 snapshot hash、反馈撤销链接，以及
-`alembic_version` 与 `schema_metadata` 都处于当前迁移头 `0003`。随后仍要用只读 SQL 核对
+`alembic_version` 与 `schema_metadata` 都处于当前迁移头 `0004`。检查也包括隔离失败快照表。
+随后仍要用只读 SQL 核对
 各表行数和抽样 hash。若 `pg_restore` 或一致性校验失败，脚本只会自动 `dropdb` 本进程刚
 创建、且已通过 disposable 名称和二次确认校验的精确目标；清理失败时保留原始错误并附加
 人工清理提示。成功的演练库不会自动删除，验收完成后由数据库管理员明确点名删除。脚本
@@ -139,7 +162,8 @@ python scripts/restore_postgres.py \
 3. 执行迁移，再逐个重建 MCP 与 Worker。
 4. 核对 `/health/ready`、迁移版本、最近采集时间和连续失败数。
 5. 应用回滚只能切回已记录 digest；数据库迁移是否可降级必须单独验证。0002/0003 对不可
-   表示的数据会拒绝降级，不得用强制清表绕过。
+   表示的数据会拒绝降级；0004 的 `failed_api_snapshot` 非空时拒绝丢失失败证据。
+   不得用强制清表绕过；失败快照与学习原始快照同样按敏感个人证据保护并纳入备份。
 
 Tunnel 中断不影响 Worker。数据库不可用时，就绪检查失败且采集不得以内存结果冒充已
 持久化成功。
@@ -235,13 +259,20 @@ docker compose -f compose.test.yaml down
 | 1 | 17 个只读操作均有 Client、原子工具和契约测试 | 本地通过 | `tests/contract/test_markji_client.py`、`test_memo_content_client.py`、`test_study_client.py`；`tests/mcp/test_atomic_tools.py` | 未跑真实账户 17 项冒烟；阻塞是本任务未获用户 Token 文件。替代为脱敏契约和真实 SDK 工具测试；仍有上游/账户数据差异风险。 |
 | 2 | 5 个组合工具返回稳定结构和统一元信息 | 本地通过 | `tests/mcp/test_composite_tools.py` 覆盖 complete/partial/stale/unavailable、截止时间和来源 | 未经真实历史规模验证；剩余风险是生产数据分布。 |
 | 3 | Worker 按计划采集且响应去重 | 本地通过 | `tests/integration/test_ingestion.py`、`test_worker_locking.py`、`test_worker_schema.py` | 替代使用一次性 PostgreSQL；NAS 长时间运行和调度漂移尚待观察。 |
-| 4 | 返回薄弱词、原因、置信度和截止时间 | 本地通过 | `tests/unit/test_weakness_scoring.py`、`tests/integration/test_weakness_service.py`、组合工具测试 | 初始权重是假设；仍需至少两周真实数据评估，不能静默改权重。 |
+| 4 | 返回薄弱词、原因、置信度和截止时间 | 本地通过 | `test_worker_persists_scores_visible_through_real_mcp` 通过实际 Worker→PG→评分→MCP；`test_scoring_failure_rolls_back_history_and_success_slot_then_retries` 验证评分失败回滚与重试；评分和组合工具测试 | 仅外部 HTTP 使用合成边界；初始权重是假设，仍需至少两周真实数据评估，不能静默改权重。 |
 | 5 | 可记录和撤销混淆反馈 | 本地通过 | `tests/integration/test_feedback_service.py`、`tests/mcp/test_feedback_tools.py` | 未做真实 ChatGPT 确认交互；替代验证追加、幂等、方向和撤销链。 |
 | 6 | MCP 未注册墨墨写操作 | 本地通过 | SDK 发现恰好 24 工具，其中 17 原子只读、5 组合只读、2 本地反馈；`tests/evaluation/test_safety_boundaries.py` | 未来新增工具仍必须更新固定审计；smoke 不会自动执行未来接口。 |
 | 7 | Token 不进入镜像、日志、数据库和工具结果 | 本地通过 | 文件密钥配置、日志脱敏测试、MCP 错误边界、Docker secret 合成审计及 smoke 输出脱敏测试 | 未审计生产 NAS ACL 和真实日志；部署时必须运行 `check_compose_secrets.py` 并巡检日志。 |
 | 8 | 数据缺失、认证失败、限流和规范漂移可观察 | 本地通过 | 数据健康 MCP 测试、传输/共享限流测试、`tests/unit/test_openapi_drift.py`、结构化日志测试 | 真实 401/429 和 Tunnel 状态未触发；替代为确定性错误注入，仍有平台告警集成风险。 |
 | 9 | PostgreSQL 备份可恢复到空库并通过一致性检查 | 本地通过 | `tests/integration/test_backup_restore.py` 对 disposable PostgreSQL 执行 custom dump、恢复和撤销链检查 | NAS 的 PostgreSQL/客户端版本、存储权限未演练；上线前必须按第 4、5 节真实演练。 |
 | 10 | ChatGPT 经 Secure MCP Tunnel 完成代表性对话 | 环境门禁，未通过 | 语料结构和安全边界测试；SDK/HTTP `/mcp` 协议替代检查 | 阻塞是没有运行中的 Secure MCP Tunnel 与 ChatGPT 工作区连接，也未获用户授权 Token。剩余风险包括 Tunnel 网络/认证、模型工具选择、参数生成和确认交互。 |
+
+最终修复的补充本地证据：`test_collection_midnight.py` 覆盖锁等待、两次 HTTP、limiter/retry
+跨上海午夜；`test_settings_intervals_reach_mcp_health_and_analysis` 覆盖 120/5 分钟配置；
+`test_failed_response_archive.py` 和真实 MCP archive 回归覆盖缺必填留档、正常可选字段、
+旧有效数据保留、BASELINE、异常/日志/MCP 边界及有损降级拒绝；
+`test_drift_permissions.py` 在真实 Linux 容器检查 UID10001 两次替换后可读。
+这些测试不会读取真实 Token、连接用户数据库或建立 Tunnel。
 
 ## 10. 最终本地验证命令
 

@@ -84,6 +84,14 @@ async def _seed_critical_rows(database: AsyncEngine) -> dict[str, object]:
             ),
             {"id": word_id},
         )
+        await connection.execute(text(
+            "WITH run AS (INSERT INTO ingestion_run(id, task_type, status) "
+            "VALUES(gen_random_uuid(), 'today', 'failed') RETURNING id) "
+            "INSERT INTO failed_api_snapshot(id, endpoint, request_hash, content_hash, "
+            "raw_response, fetched_at, ingestion_run_id) "
+            "SELECT gen_random_uuid(), 'today', 'failed-request', 'failed-content', "
+            "CAST(:raw AS jsonb), now(), id FROM run"
+        ), {"raw": '{"missing_required":true}'})
         await connection.execute(
             text(
                 "INSERT INTO daily_progress "
@@ -246,6 +254,7 @@ async def test_custom_dump_restores_critical_rows_and_links(
                     for table in (
                         "ingestion_run",
                         "api_snapshot",
+                        "failed_api_snapshot",
                         "vocabulary",
                         "daily_progress",
                         "daily_word_observation",
@@ -256,8 +265,9 @@ async def test_custom_dump_restores_critical_rows_and_links(
                     )
                 }
                 assert counts == {
-                    "ingestion_run": 1,
+                    "ingestion_run": 2,
                     "api_snapshot": 1,
+                    "failed_api_snapshot": 1,
                     "vocabulary": 1,
                     "daily_progress": 1,
                     "daily_word_observation": 1,
@@ -272,6 +282,9 @@ async def test_custom_dump_restores_critical_rows_and_links(
                 assert await connection.scalar(
                     text("SELECT content_hash FROM api_snapshot")
                 ) == expected["content_hash"]
+                assert await connection.scalar(text(
+                    "SELECT raw_response FROM failed_api_snapshot"
+                )) == {"missing_required": True}
                 assert await connection.scalar(
                     text(
                         "SELECT retracted_event_id FROM learning_feedback_event "
@@ -281,10 +294,10 @@ async def test_custom_dump_restores_critical_rows_and_links(
                 ) == expected["feedback_id"]
                 assert await connection.scalar(
                     text("SELECT version_num FROM alembic_version")
-                ) == "0003"
+                ) == "0004"
                 assert await connection.scalar(
                     text("SELECT schema_version FROM schema_metadata")
-                ) == "0003"
+                ) == "0004"
         finally:
             await restored.dispose()
     finally:

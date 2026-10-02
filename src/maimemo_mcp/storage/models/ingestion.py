@@ -67,3 +67,20 @@ class ApiSnapshot(UUIDPrimaryKey, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ingestion_run_id: Mapped[UUID] = mapped_column(ForeignKey("ingestion_run.id"))
     observation_kind: Mapped[str] = mapped_column(Text, server_default="OBSERVATION")
+
+
+class FailedApiSnapshot(UUIDPrimaryKey, Base):
+    """Isolated schema-failure evidence; never used as learning or baseline sources."""
+
+    __tablename__ = "failed_api_snapshot"
+    __table_args__ = (
+        CheckConstraint("length(endpoint) > 0", name="endpoint"),
+        CheckConstraint("length(request_hash) > 0 AND length(content_hash) > 0", name="hashes"),
+        Index("ix_failed_api_snapshot_ingestion_run_id", "ingestion_run_id"),
+    )
+    endpoint: Mapped[str]
+    request_hash: Mapped[str]
+    content_hash: Mapped[str]
+    raw_response: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ingestion_run_id: Mapped[UUID] = mapped_column(ForeignKey("ingestion_run.id"))

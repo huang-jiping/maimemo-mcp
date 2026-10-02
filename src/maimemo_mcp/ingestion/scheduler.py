@@ -34,8 +34,8 @@ class ScheduledJob:
 
 class Schedule:
     def __init__(self, settings: Settings) -> None:
-        self.today_interval = timedelta(minutes=settings.today_interval_minutes)
-        self.records_interval = timedelta(minutes=settings.records_interval_minutes)
+        self.today_interval = settings.today_interval
+        self.records_interval = settings.records_interval
         self._last_emitted: dict[str, datetime] = {}
 
     def next_runs(self, now: datetime) -> list[ScheduledJob]:

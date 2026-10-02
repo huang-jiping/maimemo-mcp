@@ -14,6 +14,7 @@ EXPECTED_TABLES = {
     "vocabulary",
     "ingestion_run",
     "api_snapshot",
+    "failed_api_snapshot",
     "api_rate_limit_window",
     "daily_progress",
     "daily_word_observation",
@@ -30,7 +31,7 @@ async def test_upgrade_creates_expected_tables(database: AsyncEngine) -> None:
         tables = await connection.run_sync(lambda conn: inspect(conn).get_table_names())
         assert set(tables) == EXPECTED_TABLES
         version = await connection.scalar(text("SELECT schema_version FROM schema_metadata"))
-        assert version == "0003"
+        assert version == "0004"
 
 
 async def test_upgrade_downgrade_reupgrade(postgres_url: str, alembic_config: Config) -> None:
@@ -77,7 +78,7 @@ async def test_timestamps_are_timezone_aware(database: AsyncEngine) -> None:
             .scalars()
             .all()
         )
-        assert json_types == ["jsonb"] * 3
+        assert json_types == ["jsonb"] * 4
 
 
 async def test_migration_and_orm_have_no_schema_drift(database: AsyncEngine) -> None:
@@ -160,7 +161,7 @@ async def test_0002_downgrade_rejects_incompatible_ids_without_deleting_data(
         await asyncio.to_thread(command.downgrade, alembic_config, "0001")
     async with database.connect() as connection:
         assert await connection.scalar(text("SELECT maimemo_id FROM vocabulary")) == upstream_id
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
 
 
 async def test_0002_downgrade_rejects_baseline_without_losing_provenance(
@@ -206,4 +207,4 @@ async def test_0002_downgrade_rejects_baseline_without_losing_provenance(
             await connection.scalar(text("SELECT observation_kind FROM api_snapshot")) == "BASELINE"
         )
         assert await connection.scalar(text("SELECT count(*) FROM daily_word_observation")) == 1
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"

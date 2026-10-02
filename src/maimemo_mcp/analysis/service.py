@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from maimemo_mcp.analysis.models import (
     WeakWordQuery,
 )
 from maimemo_mcp.analysis.scoring import calculate_weakness
+from maimemo_mcp.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
 from maimemo_mcp.ingestion.normalizers import utc_instant
 from maimemo_mcp.storage.repositories import StudyHistoryRepository
 
@@ -43,24 +44,38 @@ class WeaknessService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         version: str = "weakness-v1",
+        today_interval: timedelta = timedelta(minutes=DEFAULT_TODAY_INTERVAL_MINUTES),
+        records_interval: timedelta = timedelta(minutes=DEFAULT_RECORDS_INTERVAL_MINUTES),
     ) -> None:
         if version != "weakness-v1":
             raise ValueError("Unsupported algorithm version")
         self.session_factory = session_factory
         self.version = version
+        self.today_interval = today_interval
+        self.records_interval = records_interval
+
+    def repository(self, session: AsyncSession) -> StudyHistoryRepository:
+        return StudyHistoryRepository(
+            session, today_interval=self.today_interval, records_interval=self.records_interval
+        )
+
+    async def recalculate_in_session(self, session: AsyncSession, as_of: datetime) -> int:
+        """Join the caller's transaction so scores and formal history commit together."""
+        at = utc_instant(as_of)
+        repository = self.repository(session)
+        evidence = await repository.weakness_evidence(at)
+        for word in evidence:
+            await repository.save_weakness(calculate_weakness(word, at, self.version))
+        return len(evidence)
 
     async def recalculate(self, as_of: datetime) -> int:
         at = utc_instant(as_of)
         async with self.session_factory() as session, session.begin():
-            repository = StudyHistoryRepository(session)
-            evidence = await repository.weakness_evidence(at)
-            for word in evidence:
-                await repository.save_weakness(calculate_weakness(word, at, self.version))
-            return len(evidence)
+            return await self.recalculate_in_session(session, at)
 
     async def get_analysis_state(self, as_of: datetime) -> WeaknessAnalysisState:
         async with self.session_factory() as session:
-            return await StudyHistoryRepository(session).weakness_analysis_state(
+            return await self.repository(session).weakness_analysis_state(
                 as_of, self.version
             )
 
@@ -71,7 +86,7 @@ class WeaknessService:
         vocabulary_ids: Sequence[UUID] | None = None,
     ) -> list[WeaknessResult]:
         async with self.session_factory() as session:
-            scores = await StudyHistoryRepository(session).weak_words(
+            scores = await self.repository(session).weak_words(
                 query,
                 self.version,
                 vocabulary_ids=vocabulary_ids,

@@ -20,6 +20,7 @@
 不要提交真实凭据、Token 或个人学习数据。
 
 默认学习时区为 `Asia/Shanghai`，今日数据间隔为 30 分钟，学习记录间隔为 120 分钟。
+配置的两个采集间隔同时用于调度、健康新鲜度和评分证据质量，不需单独配置查询阈值。
 MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不要将端口映射到公网。
 时间处理接口要求输入带时区的 datetime，数据库时间采用 UTC。
 
@@ -38,6 +39,17 @@ MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不�
 
 - `mcp`：Streamable HTTP MCP 服务，内部端点为 `/mcp`；
 - `worker`：按上海学习日采集正式历史并计算薄弱词；MCP 或 Tunnel 重启不影响它。
+
+正式采集在同一事务提交原始快照、规范化历史、成功 slot 和评分；评分失败会回滚并允许
+同一 slot 重试。today 在锁后采样时钟，并核对两次 HTTP 前后的上海日期；跨午夜安全失败，
+不把不同学习日的结果混写。缺必填字段的响应仅由 Worker 留存到隔离的
+`failed_api_snapshot`，不参与 BASELINE、有效历史或评分，也不会进入 MCP 或日志。
+如果失败响应回显当前 API Token，会在留档前遮盖；失败留档写入自身出错时也只抛受控类别。
+迁移头为 `0004`；该失败证据表非空时，降级会明确拒绝丢失证据。
+
+合成数据的真实 Worker→PostgreSQL→评分→MCP 回归位于
+`tests/mcp/test_composite_tools.py::test_worker_persists_scores_visible_through_real_mcp`。
+这些本地证据不表示真实墨墨 API 或 Secure MCP Tunnel 门禁已经通过。
 
 推荐用 `compose.yaml` 连接 NAS 上已有的 PostgreSQL 15+。默认不发布 MCP 端口；Secure MCP
 Tunnel 在同一 Docker 网络内使用 `http://maimemo-mcp:8000/mcp`，原生 NAS Tunnel Client

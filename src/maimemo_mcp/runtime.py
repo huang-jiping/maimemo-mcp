@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Literal, cast
 
 import uvicorn
+from pydantic import ValidationError
 
 from maimemo_mcp.config import Settings
 from maimemo_mcp.ingestion.scheduler import Schedule
@@ -28,14 +31,29 @@ def parse_mode(argv: Sequence[str] | None = None) -> RuntimeMode:
 
 async def _run_worker(settings: Settings) -> None:
     async with open_dependencies(settings) as dependencies:
-        service = StudyIngestionService(dependencies.sessions, dependencies.study)
+        service = StudyIngestionService(
+            dependencies.sessions, dependencies.study, weakness=dependencies.weakness,
+            clock=lambda: datetime.now(UTC),
+        )
         worker = Worker(service, Schedule(settings))
         await worker.run_forever()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     mode = parse_mode(argv)
-    settings = Settings.load()
+    try:
+        settings = Settings.load()
+    except ValidationError as exc:
+        # Never format the validation exception: its input/context can retain secrets.
+        errors = []
+        for error in exc.errors(include_input=False, include_context=False, include_url=False):
+            field = error["loc"][0] if error["loc"] else "configuration"
+            if field not in Settings.model_fields:
+                field = "configuration"
+            category = "missing" if error["type"] == "missing" else "invalid"
+            errors.append(f"{field}:{category}")
+        print("configuration_error " + ",".join(errors), file=sys.stderr)
+        return 2
     configure_logging(settings)
     if mode == "worker":
         asyncio.run(_run_worker(settings))

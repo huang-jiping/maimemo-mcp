@@ -15,7 +15,6 @@ from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob, advisory_key
 from maimemo_mcp.ingestion.service import IngestionResult, StudyIngestionService
 from maimemo_mcp.logging import log_event
 from maimemo_mcp.storage.models.ingestion import IngestionRun
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class Worker:
         service: StudyIngestionService,
         schedule: Schedule,
         *,
-        clock: Callable[[], datetime] = lambda: datetime.now(SHANGHAI),
+        clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         poll_interval_seconds: float = 1.0,
     ) -> None:
@@ -34,7 +33,10 @@ class Worker:
             raise ValueError("Polling interval must be positive")
         self.service = service
         self.schedule = schedule
-        self.clock = clock
+        self.service.weakness.today_interval = schedule.today_interval
+        self.service.weakness.records_interval = schedule.records_interval
+        self.clock = clock or self.service.clock or (lambda: datetime.now(SHANGHAI))
+        self.service.clock = self.clock
         self.sleep = sleep
         self.poll_interval_seconds = poll_interval_seconds
 
@@ -94,7 +96,8 @@ class Worker:
                     return await self.service.collect_records(at, scheduled_at=slot)
                 assert job.study_date is not None
                 async with self.service.session_factory.begin() as summary_session:
-                    repo = StudyHistoryRepository(summary_session, clock=lambda: now)
+                    repo = self.service.weakness.repository(summary_session)
+                    repo.clock = lambda: now
                     await repo.record_daily_summary(job.study_date)
                     summary = await summary_session.scalar(
                         select(IngestionRun).where(

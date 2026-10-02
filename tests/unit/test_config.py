@@ -22,6 +22,22 @@ def test_settings_require_token_file_not_plain_token(environ: dict[str, str]) ->
         Settings.load(environ)
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+def test_validation_errors_hide_all_supplied_secret_values(invalid: bool) -> None:
+    import traceback
+    private_url = "postgresql://u:LEAK@h/d"
+    values = {"MAIMEMO_DATABASE_URL": private_url}
+    if invalid:
+        values.update({"MAIMEMO_TOKEN_FILE": "unused",
+                       "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": "unused",
+                       "MAIMEMO_MCP_PORT": private_url})
+    with pytest.raises(ValidationError) as caught:
+        Settings.load(values)
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "LEAK" not in formatted
+    assert private_url not in str(caught.value)
+
+
 def test_read_maimemo_token_strips_trailing_newline(environ: dict[str, str]) -> None:
     Path(environ["MAIMEMO_TOKEN_FILE"]).write_text("synthetic-token\r\n", encoding="utf-8")
     token = Settings.load(environ).read_maimemo_token()

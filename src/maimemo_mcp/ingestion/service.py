@@ -10,6 +10,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maimemo_mcp.analysis.service import WeaknessService
+from maimemo_mcp.ingestion.hashing import stable_payload_hash
 from maimemo_mcp.ingestion.normalizers import (
     SHANGHAI,
     normalize_daily_progress,
@@ -27,14 +29,27 @@ from maimemo_mcp.maimemo_client.study import (
     StudyRecordsRequest,
     TodayItemsRequest,
 )
-from maimemo_mcp.maimemo_client.transport import HttpAttemptObservation, observe_http_attempts
-from maimemo_mcp.storage.models.ingestion import IngestionRun
+from maimemo_mcp.maimemo_client.transport import (
+    HttpAttemptObservation,
+    SchemaFailureCapture,
+    capture_worker_schema_failures,
+    observe_http_attempts,
+)
+from maimemo_mcp.storage.models.ingestion import FailedApiSnapshot, IngestionRun
 from maimemo_mcp.storage.models.learning import DailyProgress
 from maimemo_mcp.storage.repositories import StudyHistoryRepository
 
 PROGRESS = "/api/v1/memo/study/get_study_progress"
 TODAY = "/api/v1/memo/study/get_today_items"
 RECORDS = "/api/v1/memo/study/query_study_records"
+
+
+class LearningDayChangedError(Exception):
+    """A today collection crossed Shanghai midnight and must be discarded."""
+
+
+class CollectionPersistenceError(Exception):
+    """Persistence failed; database diagnostics may retain private response parameters."""
 
 
 class StudyReads(Protocol):
@@ -117,9 +132,15 @@ class StudyIngestionService:
         *,
         records_range_start: datetime = datetime(1970, 1, 1, tzinfo=UTC),
         records_range_end: datetime = datetime(2100, 1, 1, tzinfo=UTC),
+        weakness: WeaknessService | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.client = client
+        self.weakness = weakness or WeaknessService(session_factory)
+        # An explicit observation with no clock supports deterministic offline replay.
+        # Production always supplies its live clock; Worker reuses any injected clock.
+        self.clock = clock
         self.records_range_start = utc_instant(records_range_start)
         self.records_range_end = utc_instant(records_range_end)
 
@@ -148,8 +169,19 @@ class StudyIngestionService:
         ],
         scheduled_at: datetime | None,
     ) -> IngestionResult:
-        with observe_http_attempts() as attempts:
-            return await self._collect_observed(task, observed_at, action, attempts, scheduled_at)
+        result: IngestionResult | None = None
+        with observe_http_attempts() as attempts, capture_worker_schema_failures() as capture:
+            try:
+                result = await self._collect_observed(
+                    task, observed_at, action, attempts, scheduled_at, capture
+                )
+            except Exception:
+                pass
+        # Raise after both the handler and raw-capture scope have ended. SQL exceptions
+        # may contain bound raw JSON; retain neither their text nor exception context.
+        if result is None:
+            raise CollectionPersistenceError("Worker collection diagnostics persistence failed")
+        return result
 
     async def _collect_observed(
         self,
@@ -160,6 +192,7 @@ class StudyIngestionService:
         ],
         attempts: HttpAttemptObservation,
         scheduled_at: datetime | None,
+        capture: SchemaFailureCapture,
     ) -> IngestionResult:
         at = utc_instant(observed_at)
         slot = None if scheduled_at is None else utc_instant(scheduled_at)
@@ -175,6 +208,8 @@ class StudyIngestionService:
             async with self.session_factory.begin() as session:
                 # Serializes all formal streams so first committed baseline is deterministic.
                 await session.execute(text("SELECT pg_advisory_xact_lock(724966203)"))
+                at = self._now(at)
+                run.started_at = at
                 if slot is not None and await session.scalar(
                     select(IngestionRun.id).where(
                         IngestionRun.task_type == task,
@@ -187,13 +222,17 @@ class StudyIngestionService:
                     )
                 session.add(run)
                 await session.flush()
-                result_count, warnings = await action(StudyHistoryRepository(session), run, at)
+                result_count, warnings = await action(self.weakness.repository(session), run, at)
                 run.request_count = attempts.count
                 run.result_count = result_count
                 run.status = "partial" if warnings else "complete"
                 run.error_category = "incomplete" if warnings else None
                 run.error_summary = "; ".join(warnings) if warnings else None
-                run.finished_at = max(datetime.now(UTC), at)
+                run.finished_at = max(self._now(at), at)
+                # Make the current run visible at the scoring cutoff before computing.
+                # Both the successful slot and scores remain uncommitted until all pass.
+                await session.flush()
+                await self.weakness.recalculate_in_session(session, run.finished_at)
                 result = IngestionResult(
                     run.id,
                     "partial" if warnings else "complete",
@@ -210,12 +249,15 @@ class StudyIngestionService:
             ):
                 return IngestionResult(None, "skipped", 0, 0, ["scheduled slot already collected"])
             # No exception message is safe: it may contain token, SQL parameters or payload.
-            category = "normalization" if isinstance(exc, ValueError) else "collection"
+            category = (
+                "learning_day_changed" if isinstance(exc, LearningDayChangedError)
+                else "normalization" if isinstance(exc, ValueError) else "collection"
+            )
             failure = IngestionRun(
                 task_type=task,
                 started_at=at,
                 scheduled_at=slot,
-                finished_at=max(datetime.now(UTC), at),
+                finished_at=max(self._now(at), at),
                 status="failed",
                 request_count=attempts.count,
                 result_count=0,
@@ -225,6 +267,17 @@ class StudyIngestionService:
             async with self.session_factory.begin() as session:
                 session.add(failure)
                 await session.flush()
+                for rejected in capture.responses:
+                    session.add(FailedApiSnapshot(
+                        endpoint=rejected.endpoint,
+                        request_hash=stable_payload_hash(rejected.endpoint, rejected.request, {}),
+                        content_hash=stable_payload_hash(
+                            rejected.endpoint, rejected.request, {"raw": rejected.raw_response}
+                        ),
+                        raw_response=rejected.raw_response,
+                        fetched_at=utc_instant(rejected.fetched_at),
+                        ingestion_run_id=failure.id,
+                    ))
                 result = IngestionResult(
                     failure.id,
                     "failed",
@@ -235,13 +288,22 @@ class StudyIngestionService:
                 )
             return result
 
+    def _now(self, fallback: datetime) -> datetime:
+        return utc_instant(self.clock()) if self.clock is not None else fallback
+
+    def _check_today_day(self, at: datetime) -> None:
+        if self._now(at).astimezone(SHANGHAI).date() != at.astimezone(SHANGHAI).date():
+            raise LearningDayChangedError("Today collection crossed a learning day boundary")
+
     async def _today(
         self,
         repo: StudyHistoryRepository,
         run: IngestionRun,
         at: datetime,
     ) -> tuple[int, list[str]]:
+        self._check_today_day(at)
         progress_response = await self.client.get_progress()
+        self._check_today_day(at)
         progress = normalize_daily_progress(progress_response, at)
         # Date context is part of the formal request identity; identical consecutive days
         # remain distinct observations even though these upstream requests have no date field.
@@ -250,7 +312,9 @@ class StudyIngestionService:
             PROGRESS, context, progress_response.model_dump(exclude_unset=True), at, run.id
         )
         request = TodayItemsRequest(limit=1000)
+        self._check_today_day(at)
         response = await self.client.get_today_items(request)
+        self._check_today_day(at)
         snapshot = await repo.snapshot(
             TODAY,
             {**request.model_dump(exclude_none=True), **context},

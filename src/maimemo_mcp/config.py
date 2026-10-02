@@ -3,6 +3,7 @@
 import os
 import re
 from collections.abc import Mapping
+from datetime import timedelta
 from pathlib import Path
 from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -13,10 +14,12 @@ _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
 )
+DEFAULT_TODAY_INTERVAL_MINUTES = 30
+DEFAULT_RECORDS_INTERVAL_MINUTES = 120
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True, hide_input_in_errors=True)
 
     database_url: str = Field(min_length=1, repr=False)
     token_file: Path
@@ -25,10 +28,18 @@ class Settings(BaseModel):
     mcp_host: str = Field(default="0.0.0.0", min_length=1)
     mcp_port: int = Field(default=8000, ge=1, le=65535)
     mcp_allowed_hosts: tuple[str, ...] = ()
-    today_interval_minutes: int = Field(default=30, gt=0)
-    records_interval_minutes: int = Field(default=120, gt=0)
+    today_interval_minutes: int = Field(default=DEFAULT_TODAY_INTERVAL_MINUTES, gt=0)
+    records_interval_minutes: int = Field(default=DEFAULT_RECORDS_INTERVAL_MINUTES, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     openapi_drift_state_file: Path = Path("var/openapi-drift.json")
+
+    @property
+    def today_interval(self) -> timedelta:
+        return timedelta(minutes=self.today_interval_minutes)
+
+    @property
+    def records_interval(self) -> timedelta:
+        return timedelta(minutes=self.records_interval_minutes)
 
     @field_validator(
         "token_file", "token_fingerprint_key_file", "openapi_drift_state_file", mode="before"

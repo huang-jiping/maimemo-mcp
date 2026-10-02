@@ -9,6 +9,7 @@ from mcp.client import Client
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from maimemo_mcp.analysis.models import WeakWordQuery
 from maimemo_mcp.analysis.service import WeaknessService
 from maimemo_mcp.config import Settings
 from maimemo_mcp.ingestion.normalizers import (
@@ -506,3 +507,96 @@ async def test_weak_analysis_coverage_includes_unscored_words_before_filtering(
         assert meta["completeness"] == "partial"
         assert "analysis_coverage_partial" in meta["warnings"]
         assert await counts(workflow_database) == before
+
+
+async def test_worker_persists_scores_visible_through_real_mcp(
+    workflow_settings: Settings, workflow_database: AsyncEngine,
+) -> None:
+    from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
+    from maimemo_mcp.ingestion.service import StudyIngestionService
+    from maimemo_mcp.ingestion.worker import Worker
+    from tests.integration.test_worker_locking import Upstream
+
+    factory = async_sessionmaker(workflow_database, expire_on_commit=False)
+    collector = Worker(StudyIngestionService(factory, Upstream()), Schedule(workflow_settings),
+                       clock=lambda: AT)
+    assert (await collector.run_job(ScheduledJob("today", AT), AT)).status == "complete"
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool("get_weak_words", {})
+        assert not result.is_error, result.content
+        assert result.structured_content is not None
+        words = result.structured_content["data"]["words"]
+        assert [row["spelling"] for row in words] == ["apple"]
+        assert words[0]["evidence_through"] == AT.isoformat().replace("+00:00", "Z")
+
+
+@pytest.mark.parametrize("interval,age,want", [(120, 31, "complete"), (5, 10, "stale")])
+async def test_settings_intervals_reach_mcp_health_and_analysis(
+    workflow_settings: Settings, workflow_database: AsyncEngine,
+    interval: int, age: int, want: str,
+) -> None:
+    await seed(workflow_database, at=AT - timedelta(minutes=age))
+    settings = workflow_settings.model_copy(update={
+        "today_interval_minutes": interval, "records_interval_minutes": interval,
+    })
+    async with Client(create_mcp_app(settings, clock=lambda: AT).sdk) as client:
+        health = await client.call_tool("get_learning_data_health", {})
+        assert health.structured_content is not None
+        assert health.structured_content["meta"]["completeness"] == want
+        # Use the production dependency factory, not an independently configured scorer.
+    from maimemo_mcp.mcp_server.dependencies import open_dependencies
+    async with open_dependencies(settings) as deps:
+        await deps.weakness.recalculate(AT)
+        words = await deps.weakness.list_weak_words(WeakWordQuery(as_of=AT))
+        assert ("DATA_QUALITY_STALE" in words[0].reason_codes) == (want == "stale")
+
+
+async def test_missing_today_remains_unavailable_with_stale_scores(
+    workflow_settings: Settings, workflow_database: AsyncEngine,
+) -> None:
+    await seed(workflow_database, tasks=("records",), at=AT - timedelta(days=1))
+    # Recalculate now to persist stale quality on a real score.
+    await WeaknessService(async_sessionmaker(workflow_database)).recalculate(AT)
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        result = await client.call_tool("get_daily_study_dashboard", {})
+        assert result.structured_content is not None
+        assert result.structured_content["data"]["weak_words"]
+        assert result.structured_content["meta"]["completeness"] == "unavailable"
+        assert "DATA_QUALITY_STALE" in result.structured_content["meta"]["warnings"]
+
+
+async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
+    workflow_settings: Settings, workflow_database: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
+    from maimemo_mcp.ingestion.service import StudyIngestionService
+    from maimemo_mcp.ingestion.worker import Worker
+    from maimemo_mcp.mcp_server.dependencies import open_dependencies
+
+    private = "SYNTHETIC_SCHEMA_ARCHIVE_PRIVATE"
+    caplog.set_level(logging.INFO)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "progress": {"finished": 1, "private": private}
+        })), **kw
+    ))
+    async with open_dependencies(workflow_settings) as deps:
+        collector = Worker(StudyIngestionService(deps.sessions, deps.study,
+                                                weakness=deps.weakness),
+                           Schedule(workflow_settings), clock=lambda: AT)
+        assert (await collector.run_job(ScheduledJob("today", AT), AT)).status == "failed"
+    async with workflow_database.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM failed_api_snapshot")) == 1
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
+        for tool in ("get_study_progress", "get_daily_study_dashboard", "get_learning_data_health"):
+            result = await client.call_tool(tool, {})
+            assert private not in repr(result)
+        live = await client.call_tool("get_study_progress", {})
+        assert live.is_error
+    assert private not in caplog.text
+    async with workflow_database.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM failed_api_snapshot")) == 1

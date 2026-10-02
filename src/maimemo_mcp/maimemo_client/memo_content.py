@@ -1,7 +1,6 @@
 """Seven pinned read operations for memo content and vocabulary."""
 
 from typing import Self
-from urllib.parse import quote
 
 from pydantic import Field, TypeAdapter, model_validator
 
@@ -15,7 +14,7 @@ from maimemo_mcp.maimemo_client.models import (
     QueryVocabularyResponse,
     VocabularyResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo_mcp.maimemo_client.transport import MaimemoTransport, encode_path_id
 
 _STRING_PARAMETER = TypeAdapter(str)
 
@@ -66,10 +65,7 @@ class MemoContentClient:
 
     async def get_notepad(self, notepad_id: str) -> GetNotepadResponse:
         notepad_id = _STRING_PARAMETER.validate_python(notepad_id, strict=True)
-        # quote leaves unreserved dots intact; HTTP clients normalize whole dot segments.
-        encoded_id = (
-            "%2E" * len(notepad_id) if notepad_id in (".", "..") else quote(notepad_id, safe="")
-        )
+        encoded_id = encode_path_id(notepad_id)
         return await self._transport.request(
             "GET",
             f"/api/v1/memo/notepads/{encoded_id}",

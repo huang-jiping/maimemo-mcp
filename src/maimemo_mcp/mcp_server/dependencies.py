@@ -62,7 +62,11 @@ async def open_dependencies(settings: Settings) -> AsyncIterator[Dependencies]:
             memo_content=MemoContentClient(transport),
             study=StudyClient(transport),
             feedback=FeedbackService(sessions),
-            weakness=WeaknessService(sessions),
+            weakness=WeaknessService(
+                sessions,
+                today_interval=settings.today_interval,
+                records_interval=settings.records_interval,
+            ),
         )
     finally:
         await _close_stack(stack)

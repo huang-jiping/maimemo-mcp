@@ -396,7 +396,9 @@ def _write_state(path: Path, report: DriftReport, checked_at: datetime) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
+        # Contains only public hashes, time and severity. Every replacement inode
+        # must remain readable by the non-root service UID, independent of writer UID.
+        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

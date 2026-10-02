@@ -1,7 +1,5 @@
 """Seven read operations from the pinned Markji OpenAPI snapshot."""
 
-from urllib.parse import quote
-
 from pydantic import BaseModel, ConfigDict
 
 from maimemo_mcp.maimemo_client.models import (
@@ -13,7 +11,7 @@ from maimemo_mcp.maimemo_client.models import (
     ListFoldersResponse,
     QueryFilesResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo_mcp.maimemo_client.transport import MaimemoTransport, encode_path_id
 
 
 class RequestModel(BaseModel):
@@ -54,27 +52,27 @@ class MarkjiClient:
 
     async def get_deck(self, deck: str) -> GetDeckResponse:
         return await self._transport.request(
-            "GET", f"/api/v1/markji/decks/{quote(deck, safe='')}", response_type=GetDeckResponse
+            "GET", f"/api/v1/markji/decks/{encode_path_id(deck)}", response_type=GetDeckResponse
         )
 
     async def list_chapters(self, deck: str) -> ListChaptersResponse:
         return await self._transport.request(
             "GET",
-            f"/api/v1/markji/decks/{quote(deck, safe='')}/chapters",
+            f"/api/v1/markji/decks/{encode_path_id(deck)}/chapters",
             response_type=ListChaptersResponse,
         )
 
     async def get_chapter(self, deck: str, chapter: str) -> GetChapterResponse:
         return await self._transport.request(
             "GET",
-            f"/api/v1/markji/decks/{quote(deck, safe='')}/chapters/{quote(chapter, safe='')}",
+            f"/api/v1/markji/decks/{encode_path_id(deck)}/chapters/{encode_path_id(chapter)}",
             response_type=GetChapterResponse,
         )
 
     async def get_card(self, deck: str, card: str) -> GetCardResponse:
         return await self._transport.request(
             "GET",
-            f"/api/v1/markji/decks/{quote(deck, safe='')}/cards/{quote(card, safe='')}",
+            f"/api/v1/markji/decks/{encode_path_id(deck)}/cards/{encode_path_id(card)}",
             response_type=GetCardResponse,
         )
 

@@ -3,7 +3,8 @@
 部署只运行 `maimemo-mcp`（Streamable HTTP MCP）和 `maimemo-worker`（定时采集进程），
 复用 NAS 已有 PostgreSQL 15+。Worker 不提供后端 API。本方案不包含前端、普通 REST API、
 Redis 或数据库容器。ChatGPT/Codex 入口继续使用 Secure MCP Tunnel；客户端原生运行于 NAS。
-MCP 只发布 `127.0.0.1:8000:8000`，不接 NPM、不加入 `app_net`、不开放公网入站。
+MCP 配置为发布 `127.0.0.1:8000:8000`，须通过下面的 Docker Engine 修复门禁和网络验收
+才可认定主机回环隔离有效；不接 NPM、不加入 `app_net`、不开放公网入站。
 
 ## 目录与前置条件
 
@@ -24,6 +25,23 @@ MCP 只发布 `127.0.0.1:8000:8000`，不接 NPM、不加入 `app_net`、不开�
 需要 Python 3.12 和锁定依赖（`uv sync --frozen`）。数据库管理员必须提前提供已存在的
 external `db_net`、该网络上的 PostgreSQL DNS 名，以及独立最小权限用户和数据库。
 应用需要出站访问墨墨 API，不能把 `db_net` 配成阻断出站的网络。
+
+部署前在 NAS 上执行：
+
+```sh
+docker version
+```
+
+查看输出的 **Server / Engine** 版本，不是 Client 或 Compose 版本。Docker Engine
+**>=28.0.0**，或 NAS **厂商明确回补** localhost 发布端口修复且有可核对的公告/版本证据，
+才可依赖回环绑定。记录服务端版本与回补证据。Docker 官方文档说明低于 28.0.0 时，
+同一 L2 网段的其他主机可能访问发布到 localhost 的端口，见
+[端口发布说明](https://docs.docker.com/engine/network/port-publishing/)。
+
+**旧版本不得直接上线**。无法确认该修复时，先由 NAS/网络管理员落实等效
+**网络/防火墙隔离**，覆盖 Docker 实际转发路径和同一 L2 网段访问；普通主机入站规则
+或仅写了 `127.0.0.1` 均不是充分证据。完成下面另一台同一 LAN 主机的不可达验收后才能
+上线；无法确认隔离效果则停止部署。项目不自动判断厂商版本，也不自动修改 NAS 防火墙。
 
 ```sh
 docker network inspect db_net
@@ -109,6 +127,20 @@ curl --fail --silent http://127.0.0.1:8000/health/status
 docker compose logs --since 30m maimemo-mcp maimemo-worker
 ```
 
+上线前的隔离验收适用于所有版本；旧版本必须先落实前置隔离，再受控启动验证。
+确认 NAS 本机 `/health/ready` 可达后，从**另一台同一 LAN**、同一 L2 网段的主机，
+把下面 `NAS_IP` 替换为 NAS 的真实 LAN 地址，验证 **NAS_IP:8000 不可达**：
+
+```sh
+nc -vz -w 3 NAS_IP 8000
+```
+
+预期 TCP 连接拒绝或超时；连接成功即验收失败。不能将 HTTP 403、404 或 Host 防护拒绝
+当成网络隔离通过：这些响应说明端口已可达。工具缺失、地址错误或测试机本身无法访问
+NAS 也不能算通过；先确认测试机能访问 NAS 的其他已知允许服务。NAS 有多个 LAN 接口时
+逐一核对。记录 Engine 版本/回补或隔离措施、测试主机、目标地址、时间和实际结果；
+失败时停止应用并检查隔离规则，**不得连接 Tunnel** 或宣称完成私有部署。
+
 MCP 就绪检查真实查询 PostgreSQL。Worker 通过结构化日志、`ingestion_run` 和 MCP 数据健康
 工具观察采集结果，没有 HTTP 健康端口。检查最近采集时间、连续失败数和迁移版本。
 首次采集可能尚未完成；不要把进程运行或健康就绪当成学习数据已采集完成。
@@ -135,7 +167,8 @@ uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml -
 升级前保存当前源码提交、外层模板、镜像 ID/标签并做数据库备份与空库恢复演练。
 将 `app/` 更新到已审阅的具体提交；对比新模板后再更新外层配置，保留私有 `.env` 和 secret。
 给 `.env` 设置新 `IMAGE_TAG`，执行 `config --quiet`、build、secret 审计和数据库迁移，
-再 `docker compose up -d` 并核对健康、日志、采集时间。不要先删旧镜像。
+再 `docker compose up -d` 并核对健康、日志、采集时间。Docker Engine、NAS 网络或防火墙
+变更后重新检查修复门禁与跨 LAN 不可达验收。不要先删旧镜像。
 
 应用回滚：把 `IMAGE_TAG` 改为保留的上一版本标签，核对其记录的镜像 ID，执行
 `docker compose up -d --no-build`，然后检查健康和采集。镜像构建上下文仍是 `app/`，

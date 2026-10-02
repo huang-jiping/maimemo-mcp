@@ -15,6 +15,26 @@ ROOT = Path(__file__).parents[2]
 NAS = ROOT / "deploy" / "nas"
 
 
+def test_nas_guide_gates_localhost_isolation_on_engine_fix_and_lan_verification() -> None:
+    guide = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    prerequisites = guide.split("## 目录与前置条件", 1)[1].split("## 配置与 secret 权限", 1)[0]
+    for requirement in (
+        "docker version", "Server", "Engine", ">=28.0.0", "厂商明确回补",
+        "旧版本不得直接上线", "网络/防火墙隔离",
+        "https://docs.docker.com/engine/network/port-publishing/",
+    ):
+        assert requirement in prerequisites, f"Missing deployment gate: {requirement}"
+    acceptance = guide.split("## 构建、迁移、启动和检查", 1)[1].split("## Tunnel", 1)[0]
+    for requirement in (
+        "另一台同一 LAN", "NAS_IP:8000", "不可达", "nc -vz -w 3 NAS_IP 8000",
+        "不能将 HTTP 403", "不得连接 Tunnel",
+    ):
+        assert requirement in acceptance, f"Missing isolation acceptance: {requirement}"
+    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    for requirement in ("docker version", ">=28.0.0", "厂商明确回补", "NAS_IP:8000"):
+        assert requirement in operations, f"Operations guide omits gate: {requirement}"
+
+
 def nas_compose() -> dict[str, Any]:
     assert (NAS / "compose.yaml").is_file(), "NAS deployment template is missing"
     return yaml.safe_load((NAS / "compose.yaml").read_text(encoding="utf-8"))

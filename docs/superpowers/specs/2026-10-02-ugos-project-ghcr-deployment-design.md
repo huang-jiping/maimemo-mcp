@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 日期：2026-10-02
-- 状态：待用户审阅
+- 状态：已通过用户确认
 - 适用范围：`maimemo-mcp` 在 PING-NAS 上的镜像发布、UGOS Pro Docker 项目部署、数据库迁移、升级与回滚
 - 依赖设计：[[2026-10-02-maimemo-learning-data-foundation-design|墨墨学习数据基础设施设计]]
 

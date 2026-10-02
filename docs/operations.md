@@ -12,9 +12,10 @@ NAS 外层 Compose 只运行同一只读应用镜像的 `mcp` 与 `worker` 两�
 localhost 发布端口修复的证据；不能用 Client/Compose 版本替代。Docker 旧版本可能允许
 同一 L2 网段访问回环发布端口，见
 [Docker 官方说明](https://docs.docker.com/engine/network/port-publishing/)。
-旧版本不得直接上线，必须先由管理员落实等效网络/防火墙隔离，并从另一台同一 LAN 主机
-验证 NAS_IP:8000 不可达。前置门禁和验收步骤以
-[部署入口](../DEPLOYMENT.md#目录与前置条件) 为准，未通过不得连接 Tunnel。
+**两项均不满足时禁止启动应用**，并禁止连接 Tunnel；先升级或取得可核对的明确回补证据。
+项目不提供自定义路由/防火墙绕过方案。另一台同一 LAN 主机验证 NAS_IP:8000 不可达
+仅为纵深检查，**不能替代版本/回补门禁**，也不覆盖旧版 localhost 发布漏洞。
+前置门禁和验收步骤以 [部署入口](../DEPLOYMENT.md#目录与前置条件) 为准。
 
 1. 为应用创建独立、最小权限的 PostgreSQL 用户和数据库，不复用管理员账号。
 2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建 `maimemo_token` 与随机生成的
@@ -115,6 +116,7 @@ NAS 主机，连接 `http://127.0.0.1:8000/mcp`，由 supervisor 管理。不得
 `0.0.0.0:8000:8000`。客户端安装与平台权限按 `docs/tunnel-setup.md` 核验。
 回环绑定本身不是跨版本的绝对隔离保证：上线前执行部署入口规定的版本门禁，并从另一台
 同一 LAN 主机验证 NAS_IP:8000 不可达；任何 HTTP 响应都不等于网络隔离通过。
+该普通 LAN 地址检查不能替代版本/回补门禁，不能证明旧版漏洞已修复。
 仓库根 Compose 仍用于通用/开发部署，默认不发布端口；它不代表本 NAS 方案。
 
 ## 4. PostgreSQL 备份

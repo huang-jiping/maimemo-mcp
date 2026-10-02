@@ -38,10 +38,10 @@ docker version
 同一 L2 网段的其他主机可能访问发布到 localhost 的端口，见
 [端口发布说明](https://docs.docker.com/engine/network/port-publishing/)。
 
-**旧版本不得直接上线**。无法确认该修复时，先由 NAS/网络管理员落实等效
-**网络/防火墙隔离**，覆盖 Docker 实际转发路径和同一 L2 网段访问；普通主机入站规则
-或仅写了 `127.0.0.1` 均不是充分证据。完成下面另一台同一 LAN 主机的不可达验收后才能
-上线；无法确认隔离效果则停止部署。项目不自动判断厂商版本，也不自动修改 NAS 防火墙。
+上述版本或明确回补证据是必须通过的生产门禁：**两项均不满足时禁止启动应用**，
+并**禁止连接 Tunnel**。先升级到受支持版本或取得可核对的厂商回补证据，再继续部署。
+普通 LAN 地址连接失败、主机防火墙规则或仅写了 `127.0.0.1` 都不能替代此门禁。
+项目不提供自定义路由/防火墙绕过方案，也不自动判断厂商版本或修改 NAS 防火墙。
 
 ```sh
 docker network inspect db_net
@@ -116,7 +116,7 @@ cd /volume3/docker/maimemo-mcp
 
 将审计的镜像标签与 `.env` 的 `IMAGE_TAG` 保持一致。结果必须为 UID 1000 / GID 10
 读取两份文件成功、写入均失败。`--synthetic` 只检查合成文件，不能替代生产 ACL 检查。
-然后对外部数据库迁移并启动：
+确认版本/回补门禁已通过后，才可对外部数据库迁移并启动：
 
 ```sh
 docker compose run --rm --no-deps --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
@@ -127,7 +127,9 @@ curl --fail --silent http://127.0.0.1:8000/health/status
 docker compose logs --since 30m maimemo-mcp maimemo-worker
 ```
 
-上线前的隔离验收适用于所有版本；旧版本必须先落实前置隔离，再受控启动验证。
+以下检查仅为已通过版本/回补门禁后的纵深验收，**不能替代版本/回补门禁**，
+**不覆盖旧版 localhost 发布漏洞**。普通 NAS LAN 地址连接失败不能证明旧版的 L2 绕过
+路径已修复，也不能作为启动未修复版本的许可。
 确认 NAS 本机 `/health/ready` 可达后，从**另一台同一 LAN**、同一 L2 网段的主机，
 把下面 `NAS_IP` 替换为 NAS 的真实 LAN 地址，验证 **NAS_IP:8000 不可达**：
 
@@ -138,7 +140,7 @@ nc -vz -w 3 NAS_IP 8000
 预期 TCP 连接拒绝或超时；连接成功即验收失败。不能将 HTTP 403、404 或 Host 防护拒绝
 当成网络隔离通过：这些响应说明端口已可达。工具缺失、地址错误或测试机本身无法访问
 NAS 也不能算通过；先确认测试机能访问 NAS 的其他已知允许服务。NAS 有多个 LAN 接口时
-逐一核对。记录 Engine 版本/回补或隔离措施、测试主机、目标地址、时间和实际结果；
+逐一核对。记录 Engine 版本/回补证据、测试主机、目标地址、时间和实际结果；
 失败时停止应用并检查隔离规则，**不得连接 Tunnel** 或宣称完成私有部署。
 
 MCP 就绪检查真实查询 PostgreSQL。Worker 通过结构化日志、`ingestion_run` 和 MCP 数据健康

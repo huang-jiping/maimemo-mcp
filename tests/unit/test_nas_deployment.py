@@ -20,19 +20,25 @@ def test_nas_guide_gates_localhost_isolation_on_engine_fix_and_lan_verification(
     prerequisites = guide.split("## 目录与前置条件", 1)[1].split("## 配置与 secret 权限", 1)[0]
     for requirement in (
         "docker version", "Server", "Engine", ">=28.0.0", "厂商明确回补",
-        "旧版本不得直接上线", "网络/防火墙隔离",
+        "两项均不满足时禁止启动应用", "禁止连接 Tunnel",
         "https://docs.docker.com/engine/network/port-publishing/",
     ):
         assert requirement in prerequisites, f"Missing deployment gate: {requirement}"
     acceptance = guide.split("## 构建、迁移、启动和检查", 1)[1].split("## Tunnel", 1)[0]
     for requirement in (
         "另一台同一 LAN", "NAS_IP:8000", "不可达", "nc -vz -w 3 NAS_IP 8000",
-        "不能将 HTTP 403", "不得连接 Tunnel",
+        "不能将 HTTP 403", "不得连接 Tunnel", "不能替代版本/回补门禁",
+        "不覆盖旧版 localhost 发布漏洞",
     ):
         assert requirement in acceptance, f"Missing isolation acceptance: {requirement}"
     operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
-    for requirement in ("docker version", ">=28.0.0", "厂商明确回补", "NAS_IP:8000"):
+    for requirement in (
+        "docker version", ">=28.0.0", "厂商明确回补", "NAS_IP:8000",
+        "两项均不满足时禁止启动应用", "不能替代版本/回补门禁",
+    ):
         assert requirement in operations, f"Operations guide omits gate: {requirement}"
+    for document in (guide, operations):
+        assert "等效" not in document, "Unpatched Engine must not have an isolation exception"
 
 
 def nas_compose() -> dict[str, Any]:

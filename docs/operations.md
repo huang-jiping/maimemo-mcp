@@ -1,22 +1,24 @@
 # 运维手册
 
-本文针对用户自有 NAS 上的私有部署。Compose 只运行同一只读应用镜像的 `mcp` 与
-`worker` 两个命令；PostgreSQL 必须是 NAS 上已有的外部 PostgreSQL 15+。默认不发布
-MCP 端口，网络仍保留出站能力以访问墨墨 API。
+NAS 部署主入口见 [DEPLOYMENT.md](../DEPLOYMENT.md)。本文提供详细运维约束。
+NAS 外层 Compose 只运行同一只读应用镜像的 `mcp` 与 `worker` 两个命令；Worker 是定时
+采集进程，不是后端 API。PostgreSQL 必须是已有的外部 PostgreSQL 15+，两个容器只加入
+已存在的 external `db_net`。MCP 只发布 NAS 回环端口，网络保留访问墨墨 API 的出站能力。
+以下 Compose 命令均从 `/volume3/docker/maimemo-mcp` 执行；脚本位于其 `app/` 源码目录。
 
 ## 1. 部署前准备
 
 1. 为应用创建独立、最小权限的 PostgreSQL 用户和数据库，不复用管理员账号。
 2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建 `maimemo_token` 与随机生成的
    `token_fingerprint_key`。文件只放值本身，可有一个末尾换行。应用容器固定以
-   UID/GID 10001 运行，因此 Linux NAS 上应让源文件归 10001 所有且仅 owner 可读：
+   UID 1000 / GID 10 运行，因此 Linux NAS 上应让源文件归 1000 所有且仅 owner 可读：
 
    ```text
-   sudo chown 10001:10001 secrets/maimemo_token secrets/token_fingerprint_key
+   sudo chown 1000:10 secrets/maimemo_token secrets/token_fingerprint_key
    sudo chmod 0400 secrets/maimemo_token secrets/token_fingerprint_key
    ```
 
-   如果 NAS 使用管理界面 ACL，必须给数字用户 10001（或映射到 GID 10001 的组）仅读取
+   如果 NAS 使用管理界面 ACL，必须给数字用户 1000 仅读取
    权限并拒绝写入，同时移除其他非管理员主体的访问权限。root/平台管理员仍可管理文件，
    但不能把源文件保留为只有 root:root 0400 可读，否则容器会收到 `PermissionError`。
 
@@ -24,12 +26,15 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
    `mode` 对这种来源会被静默忽略；本项目因此不在 Compose 中伪装设置这些字段，访问权限
    必须在 NAS 源文件 owner/group/ACL 上落实：
    <https://docs.docker.com/reference/compose-file/services/#secrets>。
-3. 创建 `var/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器以只读方式挂载。
-   Linux NAS 上确保目录允许 UID10001 遍历（例如 `mkdir -p var && chmod 0755 var`）。
+   GID 10 可能映射 NAS 管理员组，保持文件 0400，避免扩大组读取权限；父目录需允许
+   UID 1000 遍历。执行 `sudo chown 1000:10 secrets && sudo chmod 0700 secrets` 并核对 ACL。
+3. 创建外层 `data/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器只读挂载到
+   `/var/lib/maimemo`。确保目录允许 UID 1000 遍历（`mkdir -p data && chmod 0755 data`）。
    状态 writer 每次原子发布均设为 `0644`，文件仅含公开规范 hash、时间和 severity；
-   不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `var/`。
+   不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `data/`。
 4. 设置 `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
-   `postgresql+psycopg://user:password@host:5432/database` 形式。
+   `postgresql+psycopg` URL；host 使用 `db_net` 上 PostgreSQL 的 Docker DNS 名，不能是
+   localhost 或固定容器 IP。先用 `docker network inspect db_net` 核对已有网络。
 
 不要把 `.env`、数据库口令、Token、fingerprint key 或真实个人响应放入构建目录、镜像
 参数、Compose YAML、工单或 Git。
@@ -37,30 +42,33 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
 ## 2. 构建、迁移和启动
 
 ```text
-docker compose config
+docker compose config --quiet
 docker compose build --pull
-python scripts/check_compose_secrets.py \
+app/.venv/bin/python app/scripts/check_compose_secrets.py \
+  --compose-file ./compose.yaml \
   --token-file ./secrets/maimemo_token \
   --fingerprint-key-file ./secrets/token_fingerprint_key \
-  --image maimemo-mcp:local
-docker compose run --rm --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
+  --image local/maimemo-mcp:dev
+docker compose run --rm --no-deps --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
 docker compose up -d
 docker compose ps
 ```
 
-secret 审计通过真实 `docker compose run` 以 UID 10001 读取两份挂载，并逐一确认写入失败；
-它只输出计数和 UID，不输出 secret 内容。`--synthetic --image maimemo-mcp:test` 可用于不接触
+先按部署入口建立主机 `app/.venv`，审计镜像标签与 `.env` 的 IMAGE_TAG 保持一致。
+secret 审计通过真实 `docker compose run` 以 UID 1000 / GID 10 读取两份挂载，并确认写入失败；
+它只输出计数和 UID/GID，不输出 secret 内容。`--synthetic --image maimemo-mcp:test` 可用于不接触
 真实 secret 的 Docker 引擎自检，但不能替代生产源文件 owner/ACL 检查。
 
 镜像使用固定 digest 的 Python 3.12 基础镜像、锁定的 `uv.lock` 和
-`uv sync --frozen --no-dev`。运行用户为 UID/GID 10001，根文件系统只读，移除全部 Linux
+`uv sync --frozen --no-dev`。运行用户为 UID 1000 / GID 10，根文件系统只读，移除全部 Linux
 capabilities。`restart: unless-stopped` 只负责进程意外退出后的重启；MCP 的就绪检查真实
 查询 PostgreSQL。Worker 没有伪造的健康检查：其采集成败通过结构化日志、
 `ingestion_run` 和 MCP 数据健康工具观察。
 
-`maimemo-private` 是未发布端口的 Compose bridge。不能设为 Docker `internal: true`，否则
-会阻断墨墨 API 的必要出站连接。默认只有同一 Docker 网络内的进程可访问
-`http://maimemo-mcp:8000/mcp`。Compose 显式把唯一内部 DNS 名 `maimemo-mcp` 加入
+NAS 模板使用 external `db_net`，不会创建网络。数据库使用 Docker DNS，不能阻断墨墨 API
+必要出站连接。主机原生 Tunnel Client 访问 `http://127.0.0.1:8000/mcp`，同网容器也能访问
+MCP，必须信任并限制该网络成员。MCP 不经过 NPM、不加入 app_net、不开放公网。
+Compose 显式把内部 DNS 名 `maimemo-mcp` 加入
 `MAIMEMO_MCP_ALLOWED_HOSTS`；服务端只为该精确名字及其端口形式扩展 Host allowlist，其他
 Host 仍被 DNS rebinding 防护拒绝。非 Compose 部署默认不增加任何内部 Host。
 
@@ -76,11 +84,12 @@ docker compose logs --since 30m maimemo-mcp maimemo-worker
 
 ### 2.1 周期漂移检查与告警
 
-在 NAS 的任务调度器或受监督任务中每 6 小时执行一次，工作目录设为仓库的绝对路径；
+在 NAS 的任务调度器或受监督任务中每 6 小时执行一次，工作目录设为
+`/volume3/docker/maimemo-mcp/app`；
 使用已锁定依赖的主机环境，命令为：
 
 ```text
-uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml --remote https://open.maimemo.com/api_bundle.yaml --state-file var/openapi-drift.json
+uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml --remote https://open.maimemo.com/api_bundle.yaml --state-file /volume3/docker/maimemo-mcp/data/openapi-drift.json
 ```
 
 此任务只获取公开 OpenAPI，不需要 Token。退出码 0 表示 none/informational，1 表示 high，
@@ -88,26 +97,15 @@ uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml -
 消费者读取 `/health/status` 的 `drift_status`：high 需要优先排查；informational 安排规范
 审阅；unavailable/stale 检查任务运行记录、目录权限和发布路径。超过 26 小时未更新即 stale，
 因此应对连续失败或未运行报警。新解析失败不会伪造成功状态，旧文件会自然过期。
-合成 Linux 容器测试验证 root 发布后 UID10001 在连续两次原子替换后仍可读；实际 NAS ACL
+合成 Linux 容器测试验证 root 发布后 UID 1000 / GID 10 在连续两次原子替换后仍可读；实际 NAS ACL
 和定时任务是否运行仍需部署者检查。
 
 ## 3. 原生 NAS Tunnel Client 的本机访问
 
-默认 Compose 没有 `ports`。只有在 Tunnel Client 作为 NAS 主机上的受监督原生进程运行时，
-创建一个不提交到 Git 的 `compose.tunnel-local.yaml`：
-
-```yaml
-services:
-  maimemo-mcp:
-    ports:
-      - "127.0.0.1:8000:8000"
-```
-
-然后使用两份 Compose 文件启动，并让 Tunnel Client 连接
-`http://127.0.0.1:8000/mcp`。不得改成 `0.0.0.0:8000:8000`。若 Tunnel Client 在同一
-Docker 网络内，可直接使用 `http://maimemo-mcp:8000/mcp`，但镜像与版本必须先按
-`docs/tunnel-setup.md` 核验。该 DNS 名由 Compose 显式 allowlist 放行；不要通过通配符扩大
-Host 范围。
+NAS 模板已包含 `127.0.0.1:8000:8000`，无需额外 override。Tunnel Client 原生运行于
+NAS 主机，连接 `http://127.0.0.1:8000/mcp`，由 supervisor 管理。不得改为
+`0.0.0.0:8000:8000`。客户端安装与平台权限按 `docs/tunnel-setup.md` 核验。
+仓库根 Compose 仍用于通用/开发部署，默认不发布端口；它不代表本 NAS 方案。
 
 ## 4. PostgreSQL 备份
 
@@ -124,7 +122,7 @@ query 键和值必须使用上述 ASCII 字面量，空 query、percent 编码�
 
 ```text
 export MAIMEMO_BACKUP_DATABASE_URL='postgresql://app_user:...@db.internal:5432/maimemo'
-python scripts/backup_postgres.py --output /backups/maimemo-2026-10-02.dump
+app/.venv/bin/python app/scripts/backup_postgres.py --output /volume3/docker/maimemo-mcp/backup/maimemo-2026-10-02.dump
 ```
 
 Windows PowerShell 使用：
@@ -138,6 +136,9 @@ python.exe scripts/backup_postgres.py --output 'D:\backups\maimemo-2026-10-02.du
 命令新建的部分文件；绝不覆盖旧备份。`--docker-container` 仅供仓库的一次性集成测试，
 生产不要使用。
 
+主机备份进程可能无法解析 Docker DNS，需使用数据库管理员提供的主机可达私有地址。
+示例 URL 的省略号不是可执行凭据；通过受控环境注入真实 URL，不放在命令行或日志。
+
 ## 5. 空库恢复演练
 
 恢复只允许新数据库，且名称必须匹配 `maimemo_restore_[a-z0-9_]{8,47}`（总长不超过
@@ -146,8 +147,8 @@ PostgreSQL 标识符上限 63 字节）。确认值必须和目标
 
 ```text
 export MAIMEMO_RESTORE_ADMIN_URL='postgresql://restore_admin:...@db.internal:5432/postgres'
-python scripts/restore_postgres.py \
-  --backup /backups/maimemo-2026-10-02.dump \
+app/.venv/bin/python app/scripts/restore_postgres.py \
+  --backup /volume3/docker/maimemo-mcp/backup/maimemo-2026-10-02.dump \
   --target-database maimemo_restore_drill_20261002 \
   --confirm-disposable-target maimemo_restore_drill_20261002
 ```
@@ -276,7 +277,7 @@ docker compose -f compose.test.yaml down
 跨上海午夜；`test_settings_intervals_reach_mcp_health_and_analysis` 覆盖 120/5 分钟配置；
 `test_failed_response_archive.py` 和真实 MCP archive 回归覆盖缺必填留档、正常可选字段、
 旧有效数据保留、BASELINE、异常/日志/MCP 边界及有损降级拒绝；
-`test_drift_permissions.py` 在真实 Linux 容器检查 UID10001 两次替换后可读。
+`test_drift_permissions.py` 在真实 Linux 容器检查 UID 1000 / GID 10 两次替换后可读。
 这些测试不会读取真实 Token、连接用户数据库或建立 Tunnel。
 
 ## 10. 最终本地验证命令
@@ -288,11 +289,12 @@ uv lock --check
 uv run ruff check .
 uv run mypy src
 uv run pytest -v
-docker compose config
+docker compose config --quiet
 docker build -t maimemo-mcp:test .
 git status --short
 ```
 
-`docker compose config` 需要提供一个语法有效但不必可连接的
+上面本地验证在源码目录运行，根 Compose 为通用/开发配置；NAS 模板另需在外层目录
+执行 `docker compose config --quiet`。配置检查需要提供一个语法有效但不必可连接的
 `MAIMEMO_DATABASE_URL`；构建和配置检查不得注入真实 Token。真实墨墨冒烟与 Secure MCP
 Tunnel/ChatGPT 评测是独立环境门禁，只有观察到其实际输出后才能改为通过。

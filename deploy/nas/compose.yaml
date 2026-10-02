@@ -1,0 +1,85 @@
+name: maimemo-mcp
+
+x-maimemo-common: &maimemo-common
+  image: local/maimemo-mcp:${IMAGE_TAG:-dev}
+  build:
+    context: ./app
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  init: true
+  env_file:
+    - .env
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  environment:
+    TZ: ${TZ:-Asia/Shanghai}
+    MAIMEMO_DATABASE_URL: ${MAIMEMO_DATABASE_URL:?Set the external PostgreSQL URL}
+    MAIMEMO_TOKEN_FILE: /run/secrets/maimemo_token
+    MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE: /run/secrets/token_fingerprint_key
+    MAIMEMO_TIMEZONE: ${MAIMEMO_TIMEZONE:-Asia/Shanghai}
+    MAIMEMO_MCP_HOST: 0.0.0.0
+    MAIMEMO_MCP_PORT: 8000
+    MAIMEMO_MCP_ALLOWED_HOSTS: maimemo-mcp
+    MAIMEMO_TODAY_INTERVAL_MINUTES: ${MAIMEMO_TODAY_INTERVAL_MINUTES:-30}
+    MAIMEMO_RECORDS_INTERVAL_MINUTES: ${MAIMEMO_RECORDS_INTERVAL_MINUTES:-120}
+    MAIMEMO_LOG_LEVEL: ${MAIMEMO_LOG_LEVEL:-INFO}
+    MAIMEMO_OPENAPI_DRIFT_STATE_FILE: /var/lib/maimemo/openapi-drift.json
+  secrets:
+    - maimemo_token
+    - token_fingerprint_key
+  volumes:
+    - type: bind
+      source: ./data
+      target: /var/lib/maimemo
+      read_only: true
+  networks:
+    - db_net
+  stop_grace_period: 30s
+
+services:
+  maimemo-mcp:
+    <<: *maimemo-common
+    container_name: maimemo-mcp
+    command: ["mcp"]
+    expose:
+      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - /opt/venv/bin/python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  maimemo-worker:
+    <<: *maimemo-common
+    container_name: maimemo-worker
+    command: ["worker"]
+
+networks:
+  db_net:
+    external: true
+    name: db_net
+
+secrets:
+  maimemo_token:
+    file: ./secrets/maimemo_token
+  token_fingerprint_key:
+    file: ./secrets/token_fingerprint_key

@@ -10,8 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH=/opt/venv/bin:${PATH}
 
-RUN groupadd --system --gid 10001 maimemo \
-    && useradd --system --uid 10001 --gid maimemo --home-dir /nonexistent \
+RUN getent group 10 >/dev/null \
+    && useradd --uid 1000 --gid 10 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin maimemo \
     && python -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
@@ -31,7 +31,7 @@ RUN uv sync --frozen --no-dev \
     && chown -R root:root /app /opt/venv \
     && chmod -R a-w /app /opt/venv
 
-USER 10001:10001
+USER 1000:10
 EXPOSE 8000
 
 ENTRYPOINT ["/opt/venv/bin/python", "-m", "maimemo_mcp.runtime"]

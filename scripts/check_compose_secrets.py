@@ -1,4 +1,4 @@
-"""Audit Compose secret readability and read-only enforcement as UID 10001."""
+"""Audit Compose secret readability and read-only enforcement as UID 1000 / GID 10."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ for path in paths:
         pass
     else:
         raise RuntimeError('secret mount is writable')
-print(json.dumps({'uid': os.getuid(), 'readable': 2, 'readonly': 2}))
+print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'readable': 2, 'readonly': 2}))
 """
 
 
@@ -43,6 +43,7 @@ def parser() -> argparse.ArgumentParser:
     source.add_argument("--token-file", type=Path)
     result.add_argument("--fingerprint-key-file", type=Path)
     result.add_argument("--image", default="maimemo-mcp:test")
+    result.add_argument("--compose-file", type=Path, default=COMPOSE_FILE)
     return result
 
 
@@ -53,19 +54,32 @@ def _resolve_file(path: Path, label: str) -> Path:
     return resolved
 
 
-def _audit(token_file: Path, key_file: Path, image: str) -> None:
+def _audit(
+    token_file: Path, key_file: Path, image: str, *, compose_file: Path = COMPOSE_FILE,
+) -> None:
     token = _resolve_file(token_file, "Token secret")
     key = _resolve_file(key_file, "Fingerprint key secret")
     if token == key:
         raise ValueError("Token and fingerprint key must use different files")
+    compose = _resolve_file(compose_file, "Compose file")
+    with tempfile.TemporaryDirectory(prefix="maimemo-secret-override-") as directory:
+        override = Path(directory) / "compose.override.json"
+        override.write_text(json.dumps({
+            "services": {"maimemo-mcp": {"image": image}},
+            "secrets": {
+                "maimemo_token": {"file": str(token)},
+                "token_fingerprint_key": {"file": str(key)},
+            },
+        }), encoding="utf-8")
+        _audit_compose(compose, override)
+
+
+def _audit_compose(compose: Path, override: Path) -> None:
     project = f"maimemo-secret-audit-{uuid4().hex[:12]}"
     environment = dict(os.environ)
     environment.update(
         {
             "MAIMEMO_DATABASE_URL": "postgresql+psycopg://audit:unused@db.invalid/audit",
-            "MAIMEMO_IMAGE": image,
-            "MAIMEMO_TOKEN_SECRET_FILE": str(token),
-            "MAIMEMO_TOKEN_FINGERPRINT_KEY_SECRET_FILE": str(key),
         }
     )
     command = [
@@ -74,7 +88,9 @@ def _audit(token_file: Path, key_file: Path, image: str) -> None:
         "-p",
         project,
         "-f",
-        str(COMPOSE_FILE),
+        str(compose),
+        "-f",
+        str(override),
         "run",
         "--rm",
         "--no-deps",
@@ -87,7 +103,7 @@ def _audit(token_file: Path, key_file: Path, image: str) -> None:
     try:
         completed = subprocess.run(
             command,
-            cwd=ROOT,
+            cwd=compose.parent,
             env=environment,
             text=True,
             capture_output=True,
@@ -95,7 +111,7 @@ def _audit(token_file: Path, key_file: Path, image: str) -> None:
             check=True,
         )
         result = json.loads(completed.stdout.strip())
-        if result != {"uid": 10001, "readable": 2, "readonly": 2}:
+        if result != {"uid": 1000, "gid": 10, "readable": 2, "readonly": 2}:
             raise RuntimeError("Compose secret audit returned an unexpected result")
     finally:
         subprocess.run(
@@ -105,18 +121,20 @@ def _audit(token_file: Path, key_file: Path, image: str) -> None:
                 "-p",
                 project,
                 "-f",
-                str(COMPOSE_FILE),
+                str(compose),
+                "-f",
+                str(override),
                 "down",
                 "--remove-orphans",
             ],
-            cwd=ROOT,
+            cwd=compose.parent,
             env=environment,
             text=True,
             capture_output=True,
             shell=False,
             check=False,
         )
-    print("Compose secret audit passed: UID 10001 read both mounts and could write neither")
+    print("Compose secret audit passed: UID 1000 / GID 10 read both mounts and could write neither")
 
 
 def main() -> int:
@@ -129,11 +147,11 @@ def main() -> int:
             token, key = root / "token", root / "key"
             token.write_text("synthetic-token-for-mount-audit", encoding="utf-8")
             key.write_text("synthetic-key-for-mount-audit", encoding="utf-8")
-            _audit(token, key, args.image)
+            _audit(token, key, args.image, compose_file=args.compose_file)
         return 0
     if args.fingerprint_key_file is None:
         raise ValueError("--fingerprint-key-file is required with --token-file")
-    _audit(args.token_file, args.fingerprint_key_file, args.image)
+    _audit(args.token_file, args.fingerprint_key_file, args.image, compose_file=args.compose_file)
     return 0
 
 

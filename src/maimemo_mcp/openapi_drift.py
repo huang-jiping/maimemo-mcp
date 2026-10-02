@@ -87,10 +87,12 @@ def _schema_path(prefix: str, name: str, *, separator: str = "") -> str:
 
 
 def _parameter_path(parameter: Mapping[str, Any]) -> str:
-    return _schema_path(
-        str(parameter.get("in", "unknown")), str(parameter.get("name", "unknown")),
-        separator=":",
-    )
+    location, name = parameter.get("in"), parameter.get("name")
+    # Validate the raw OpenAPI scalars before any rendering. str(list/dict) can
+    # expand aliases far beyond the input and bypass a later string-size check.
+    if not isinstance(location, str) or not isinstance(name, str):
+        raise SpecReadError("parameter_type")
+    return _schema_path(location, name, separator=":")
 
 
 class _BoundedLoader(yaml.SafeLoader):
@@ -178,7 +180,11 @@ def _mapping(value: object, *, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise SpecReadError(f"{label} must be a mapping")
     _consume(1 + len(value))
-    return {str(key): item for key, item in value.items()}
+    # OpenAPI mapping keys must be strings; coercing binary/container scalars
+    # could allocate their representation before any field-path budget applies.
+    if any(not isinstance(key, str) for key in value):
+        raise SpecReadError("mapping_key_type")
+    return dict(value)
 
 
 def _load(document: bytes) -> Mapping[str, Any]:
@@ -238,7 +244,12 @@ def _schema_fields(
             return set(), set()
         seen = seen | {reference}
         value = _resolve(root, value)
-    required_names = {str(item) for item in value.get("required", [])}
+    required_value = value.get("required", [])
+    if not isinstance(required_value, list) or any(
+        not isinstance(item, str) for item in required_value
+    ):
+        raise SpecReadError("required_type")
+    required_names = set(required_value)
     properties = _mapping(value.get("properties", {}), label="schema properties")
     required: set[str] = set()
     optional: set[str] = set()

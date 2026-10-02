@@ -119,15 +119,18 @@ async def test_cancellation_during_upstream_request_closes_stream_promptly(
         assert not state.exists()
 
 
+@pytest.mark.parametrize("failure", [
+    "path_budget", "parameter_alias", "parameter_container", "required_container", "mapping_binary",
+])
 async def test_path_budget_failure_keeps_collection_alive_and_shutdown_has_no_orphans(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failure: str,
 ) -> None:
     caplog.set_level("INFO")
     state = tmp_path / "state.json"
     tasks_before = asyncio.all_tasks()
     failed_check, collection_alive = asyncio.Event(), asyncio.Event()
     parent = "SYNTHETIC_PRIVATE_PARENT_" + "x" * 4096
-    current = yaml.safe_dump({
+    document = {
         "openapi": "3.0.0", "paths": {"/fanout": {"get": {
             "operationId": "getFanout", "responses": {"200": {"content": {
                 "application/json": {"schema": {"properties": {
@@ -137,7 +140,32 @@ async def test_path_budget_failure_keeps_collection_alive_and_shutdown_has_no_or
                 }}},
             }}},
         }}},
-    }).encode("utf-8")
+    }
+    if failure.startswith("parameter_"):
+        value: object = [[parent]] * 64
+        if failure == "parameter_container":
+            for _ in range(12):
+                value = {"nested": value}
+        document = {
+            "openapi": "3.0.0", "paths": {"/fanout": {"get": {
+                "operationId": "getFanout", "parameters": [{"name": value, "in": "query"}],
+                "responses": {"200": {"description": "ok"}},
+            }}},
+        }
+    elif failure in {"required_container", "mapping_binary"}:
+        schema = (
+            {"required": [[[parent]] * 64], "properties": {"field": {"type": "string"}}}
+            if failure == "required_container"
+            else {"properties": {parent.encode("utf-8"): {"type": "string"}}}
+        )
+        document = {
+            "openapi": "3.0.0", "paths": {"/fanout": {"get": {
+                "operationId": "getFanout", "responses": {"200": {"content": {
+                    "application/json": {"schema": schema},
+                }}},
+            }}},
+        }
+    current = yaml.safe_dump(document).encode("utf-8")
     pulses = 0
 
     async def sleep(seconds: float) -> None:

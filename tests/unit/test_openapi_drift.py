@@ -470,3 +470,94 @@ def test_real_pinned_result_is_unchanged_under_path_budgets() -> None:
     assert report.severity == "none"
     assert report.changes == ()
     assert report.pinned_sha256 == report.current_sha256 == hashlib.sha256(pinned).hexdigest()
+
+
+@pytest.mark.parametrize("field", ["name", "in"])
+@pytest.mark.parametrize("shape", ["alias_list", "deep_mapping", "integer", "null"])
+def test_parameter_container_or_nonstring_is_rejected_before_rendering(
+    field: str, shape: str,
+) -> None:
+    scalar = "SYNTHETIC_PRIVATE_PARAMETER_" + "x" * 4096
+    if shape == "alias_list":
+        # Container aliases are emitted by SafeDumper; scalar strings alone are not.
+        value: object = [[scalar]] * 64
+    elif shape == "deep_mapping":
+        value = scalar
+        for _ in range(12):
+            value = {"nested": value}
+    elif shape == "integer":
+        value = 42
+    else:
+        value = None
+    parameter = {"name": "limit", "in": "query", "required": False}
+    parameter[field] = value
+    current = yaml.safe_dump({
+        "openapi": "3.0.0", "paths": {"/test": {"get": {
+            "operationId": "getTest", "parameters": [parameter],
+            "responses": {"200": {"description": "ok"}},
+        }}},
+    }).encode("utf-8")
+    with pytest.raises(drift.SpecReadError, match="^parameter_type$") as failure:
+        compare_openapi(drift.DEFAULT_PINNED_FILE.read_bytes(), current)
+    assert scalar not in str(failure.value)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+
+
+@pytest.mark.parametrize("field", ["name", "in"])
+def test_parameter_type_check_never_calls_container_str_or_repr(field: str) -> None:
+    rendered: list[str] = []
+
+    class ForbiddenRendering(list[object]):
+        def __str__(self) -> str:
+            rendered.append("str")
+            raise AssertionError("parameter conversion must not happen")
+
+        def __repr__(self) -> str:
+            rendered.append("repr")
+            raise AssertionError("parameter conversion must not happen")
+
+    parameter: dict[str, object] = {"name": "limit", "in": "query"}
+    parameter[field] = ForbiddenRendering()
+    with pytest.raises(drift.SpecReadError, match="^parameter_type$"):
+        drift._parameter_path(parameter)
+    assert rendered == []
+
+
+@pytest.mark.parametrize("required", ["field", {"field": "nested"}, [["field"]], [42], None])
+def test_required_must_be_a_list_of_strings_before_schema_rendering(required: object) -> None:
+    current = yaml.safe_dump({
+        "openapi": "3.0.0", "paths": {"/test": {"get": {
+            "operationId": "getTest", "responses": {"200": {"content": {
+                "application/json": {"schema": {"required": required, "properties": {
+                    "field": {"type": "string"},
+                }}},
+            }}},
+        }}},
+    }).encode("utf-8")
+    with pytest.raises(drift.SpecReadError, match="^required_type$"):
+        compare_openapi(drift.DEFAULT_PINNED_FILE.read_bytes(), current)
+
+
+def test_required_type_check_never_renders_container_elements() -> None:
+    class ForbiddenRendering(list[object]):
+        def __str__(self) -> str:
+            raise AssertionError("required element must not be rendered")
+
+        def __repr__(self) -> str:
+            raise AssertionError("required element must not be rendered")
+
+    with pytest.raises(drift.SpecReadError, match="^required_type$"):
+        drift._schema_fields({}, {"required": [ForbiddenRendering()], "properties": {}})
+
+
+def test_mapping_keys_never_render_nonstring_yaml_scalars_or_objects() -> None:
+    class ForbiddenRendering:
+        def __str__(self) -> str:
+            raise AssertionError("mapping key must not be rendered")
+
+        def __repr__(self) -> str:
+            raise AssertionError("mapping key must not be rendered")
+
+    for key in (ForbiddenRendering(), b"SYNTHETIC_PRIVATE_BINARY_KEY"):
+        with pytest.raises(drift.SpecReadError, match="^mapping_key_type$"):
+            drift._mapping({key: {}}, label="schema properties")

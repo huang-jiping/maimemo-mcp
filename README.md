@@ -51,13 +51,23 @@ MCP 容器内监听 `0.0.0.0:8000`；NAS 模板只发布主机回环地址 `127.
 `tests/mcp/test_composite_tools.py::test_worker_persists_scores_visible_through_real_mcp`。
 这些本地证据不表示真实墨墨 API 或 Secure MCP Tunnel 门禁已经通过。
 
-NAS 私有部署从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始：源码位于外层部署目录的 `app/`，
-外层模板连接已有 external `db_net` 和 PostgreSQL 15+。原生 Secure MCP Tunnel Client
-使用 `http://127.0.0.1:8000/mcp`。Worker 是采集进程，不提供后端 API。
-详细运维和 Tunnel 步骤见 `docs/operations.md` 与 `docs/tunnel-setup.md`。
+NAS 私有部署从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始：在 UGOS Pro 的 Docker → 项目中
+创建/导入仓库交付的 [NAS Compose](deploy/nas/compose.yaml)，项目名为 `maimemo-mcp`，
+正常状态为 `2 / 2`。两个容器拉取同一公开镜像
+`ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}`，连接已有 external `db_net` 和
+PostgreSQL 15+（数据库与应用用户均为 `maimemo`）。MCP 启动前自动迁移；Worker 等待
+就绪并每六小时检查 OpenAPI 漂移。日常拉取/更新/重建和不可变 `vX.Y.Z` 回退均在项目页面操作。
+本地填写真实 Docker DNS、数据库口令和两份 secret；不在聊天或 Git 提交秘密。
+Docker Engine >=28.0.0 或可核验厂商回补、跨 LAN 的 8000 不可达检查仍是上线门禁。
+Secure MCP Tunnel 为后续接入，当前私有部署不需要其凭据；原生客户端将连接
+`http://127.0.0.1:8000/mcp`。详细运维和后续接入见
+[运维手册](docs/operations.md) 与 [Tunnel 说明](docs/tunnel-setup.md)。
+当前 GHCR 首次公开发布及 UGOS/NAS 实机验收未完成；需完成发布验收后才可匿名拉取。
 仓库根 `compose.yaml` 保留为通用/开发配置。
 
 ## 只读真实接口冒烟
+
+以下源码脚本仅在保留源码与锁定依赖的开发工作站执行，不属于 NAS 项目的部署或运维流程。
 
 只有在用户明确提供 Token 文件并完成数据库配置后，才运行：
 

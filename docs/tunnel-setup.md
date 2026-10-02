@@ -3,6 +3,10 @@
 核验日期：2026-10-02。以下步骤只采用 OpenAI 官方文档和 `openai/tunnel-client` 官方
 仓库；本项目不把 Tunnel Client 打进应用镜像，也不假设某个未核验的第三方 Docker 镜像。
 
+本文是后续接入步骤。当前私有部署由 UGOS Pro Docker 项目运行 MCP 与 Worker，不需要
+Tunnel 凭据，也不增加 Tunnel sidecar。以下命令只在决定接入时由部署者执行；本地实现
+并不表示已连接 Tunnel，NAS/ChatGPT 的实际端到端状态仍未验证。
+
 ## 1. 当日核验结论
 
 - OpenAI 官方说明 Secure MCP Tunnel 由私网内的 `tunnel-client` 主动建立出站 HTTPS，
@@ -40,7 +44,12 @@
 
 ## 3. 配置 NAS-local HTTP MCP
 
-先按 `DEPLOYMENT.md` 复制 NAS 模板；模板已经只在回环地址发布 MCP：
+先按 `DEPLOYMENT.md` 在 UGOS Pro 导入仓库 `deploy/nas/compose.yaml` 并完成私有部署验收。
+必须记录 `docker version` 的 Server / Engine >=28.0.0，或 NAS 厂商明确回补 localhost
+发布漏洞的可核验证据；两项均不满足时禁止启动应用并禁止连接 Tunnel。版本门禁通过后，
+从另一台同一 LAN/L2 主机检查 NAS_IP:8000 不可达，任何 HTTP 响应都表示端口已可达。
+LAN 检查不能替代版本/回补门禁；任一检查失败均禁止连接 Tunnel。
+模板已经只在回环地址发布 MCP：
 
 ```text
 http://127.0.0.1:8000/mcp
@@ -70,7 +79,8 @@ tunnel-client doctor --profile maimemo-nas --explain
 tunnel-client run --profile maimemo-nas
 ```
 
-通过 supervisor 注入 `CONTROL_PLANE_API_KEY`；不要把值放入命令行、profile、Compose 或
+Tunnel ID 与凭据仅在本地受控配置中填写，不需要发送到聊天；通过 supervisor 注入
+`CONTROL_PLANE_API_KEY`；不要把值放入命令行、profile、Compose 或
 Git。NAS 必须能出站访问 `api.openai.com:443`（配置 control-plane mTLS 时为
 `mtls.api.openai.com:443`），并能访问上述本机 MCP URL。禁止新增公网入站 NAT/端口转发。
 

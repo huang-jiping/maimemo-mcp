@@ -3,13 +3,13 @@
 ## 1. 文档状态
 
 - 日期：2026-10-02
-- 状态：已通过用户确认
+- 状态：已通过用户确认；Tasks 1–5 已完成本地实现与验证，Task 6 的公开 GHCR 首次发布与 NAS/UGOS 实机验收未完成
 - 适用范围：`maimemo-mcp` 在 PING-NAS 上的镜像发布、UGOS Pro Docker 项目部署、数据库迁移、升级与回滚
 - 依赖设计：[[2026-10-02-maimemo-learning-data-foundation-design|墨墨学习数据基础设施设计]]
 
 ## 2. 背景与目标
 
-当前 NAS 部署模板使用本地源码和 `build:` 构建镜像，适合命令行部署，但不适合长期通过绿联云 UGOS Pro 的 Docker“项目”模块维护。用户已确认最终运维入口必须是 UGOS Pro Docker 项目，并希望使用项目页面的镜像更新能力，而不是每次通过 SSH 拉取源码和重新构建。
+本设计提出时，NAS 部署模板使用本地源码和 `build:` 构建镜像，适合命令行部署，但不适合长期通过绿联云 UGOS Pro 的 Docker“项目”模块维护。用户已确认最终运维入口必须是 UGOS Pro Docker 项目，并希望使用项目页面的镜像更新能力，而不是每次通过 SSH 拉取源码和重新构建。Task 5 已将仓库交付模板改为 GHCR 拉取，公开发布与实机验收仍待 Task 6。
 
 本设计的成功标准是：
 
@@ -33,7 +33,7 @@
 
 ## 4. 方案选择
 
-### 4.1 采用方案：公开 GHCR + UOS 项目拉取
+### 4.1 采用方案：公开 GHCR + UGOS 项目拉取
 
 发布链路为：
 
@@ -122,6 +122,9 @@ UGOS Pro 项目名固定为 `maimemo-mcp`。项目存储目录使用：
 ### 6.2 Compose 行为
 
 - 两个服务使用同一镜像：`ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}`。
+- 仓库 `deploy/nas/compose.yaml` 是交付源；UGOS 导入同一文件，不另维护文档内的独立 Compose。
+- 两个服务均为 `pull_policy: always`、UID 1000 / GID 10，限制 1 CPU、512 MiB 内存、128 个进程；日志只用受限 Docker json-file，不挂载备份目录。
+- `data/` 源目录由 UID 1000 / GID 10 所有并设为 `0700`；Worker 读写挂载，MCP 只读挂载，原子发布的公开漂移状态文件为 `0644`。
 - 删除生产 Compose 中的 `build:`，确保 UGOS Pro 更新只拉取已发布镜像，不在 NAS 隐式构建。
 - `maimemo-mcp` 使用 `mcp` 模式，保留健康检查和 `127.0.0.1:8000:8000`。
 - `maimemo-worker` 使用 `worker` 模式，不发布端口。
@@ -129,6 +132,7 @@ UGOS Pro 项目名固定为 `maimemo-mcp`。项目存储目录使用：
 - Worker 同时使用 Compose 的 `service_healthy` 依赖和应用级 schema 就绪检查；不能只依赖启动顺序。
 - MCP 的 ready 健康检查必须验证数据库 schema 与当前镜像兼容，不能只验证数据库可以执行 `SELECT 1`。
 - 健康检查的 `start_period` 必须覆盖迁移允许的最大正常时长，避免合法迁移尚未结束时被 UGOS Pro 过早判定为异常。
+- 当前模板设为 `6m`，覆盖默认连接/锁/迁移语句预算；增加超时或引入多条耗时迁移时需一并复核健康宽限。
 - `restart: unless-stopped`、只读根文件系统、capabilities 删除、`no-new-privileges`、日志轮转和 secret 挂载保持不变。
 
 ### 6.3 私有配置
@@ -137,10 +141,10 @@ UGOS Pro 项目名固定为 `maimemo-mcp`。项目存储目录使用：
 
 ```text
 IMAGE_TAG=stable
-MAIMEMO_DATABASE_URL=postgresql+psycopg://maimemo:<编码后的密码>@<db_net中的真实DNS>:5432/maimemo?sslmode=disable
+MAIMEMO_DATABASE_URL=postgresql+psycopg://maimemo:REPLACE_WITH_URL_ENCODED_PASSWORD@replace-with-db-net-dns.invalid:5432/maimemo?sslmode=disable
 ```
 
-真实数据库密码只存在于 NAS 私有 `.env`。墨墨 Token 和稳定的 fingerprint key 继续使用文件 secret。任何真实值都不得粘贴到 UGOS Pro Compose 编辑器、GitHub Issue、Actions 日志、文档或 Git。
+上述密码与 `.invalid` DNS 占位符必须在 NAS 本地替换；数据库用户名与库名保持 `maimemo`。真实数据库密码只存在于 NAS 私有 `.env`。墨墨 Token 和稳定的 fingerprint key 继续使用文件 secret。任何真实值都不得粘贴到 UGOS Pro Compose 编辑器、GitHub Issue、Actions 日志、文档或 Git。Tunnel 为后续独立接入，当前私有项目不需要其凭据。
 
 ## 7. 自动数据库迁移
 
@@ -197,7 +201,7 @@ Worker 和 MCP 的 schema 门禁必须精确比较数据库 `alembic_version` �
 4. 更新前生成 PostgreSQL 备份并记录当前版本、完整镜像摘要、Git SHA、Alembic revision、备份文件及最近一次恢复验证结果。
 5. 在 UGOS Pro Docker 项目中执行镜像更新/重新部署。
 6. 确认项目显示 `2 / 2`、MCP 健康、数据库 revision 正确、Worker 产生新的成功采集记录。
-7. 从同一局域网其他主机复核 NAS 的 8000 端口仍不可达；Tunnel 端验证 MCP 可用。
+7. 从同一局域网其他主机复核 NAS 的 8000 端口仍不可达；只有后续已接入 Tunnel 时才验证 Tunnel 端 MCP。
 
 “一键更新”只指镜像拉取和项目重新部署入口集中在 UGOS Pro，不代表跳过备份、发布说明审阅和更新后验收。
 
@@ -208,7 +212,7 @@ Worker 和 MCP 的 schema 门禁必须精确比较数据库 `alembic_version` �
 1. 停止项目；
 2. 将 `IMAGE_TAG` 从 `stable` 改为上一个不可变版本，例如 `v1.2.2`；
 3. 在 UGOS Pro 中重新部署；
-4. 核验两个容器、健康检查、Worker 和 Tunnel。
+4. 核验两个容器、健康检查与 Worker；后续已接入 Tunnel 时再核验 Tunnel。
 
 旧镜像是否兼容当前 schema 必须由相应版本组合测试证明，不能仅根据版本号推断。实际回退记录以镜像 digest 为最终证据，版本标签只作为可读入口。
 
@@ -248,7 +252,7 @@ Worker 和 MCP 的 schema 门禁必须精确比较数据库 `alembic_version` �
 
 ## 10. 文档与实现影响
 
-后续实现预计涉及：
+Tasks 1–5 的本地实现涉及（不代表 Task 6 发布或 NAS 实机验收已经通过）：
 
 - 新增 GitHub Actions 质量检查和 GHCR 发布工作流；
 - 调整 NAS Compose 与环境变量示例，删除生产 `build:`；

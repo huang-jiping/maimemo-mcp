@@ -1,192 +1,124 @@
 # 运维手册
 
-NAS 部署主入口见 [DEPLOYMENT.md](../DEPLOYMENT.md)。本文提供详细运维约束。
-NAS 外层 Compose 只运行同一只读应用镜像的 `mcp` 与 `worker` 两个命令；Worker 是定时
-采集进程，不是后端 API。PostgreSQL 必须是已有的外部 PostgreSQL 15+，两个容器只加入
-已存在的 external `db_net`。MCP 只发布 NAS 回环端口，网络保留访问墨墨 API 的出站能力。
-以下 Compose 命令均从 `/volume3/docker/maimemo-mcp` 执行；脚本位于其 `app/` 源码目录。
+NAS 的日常控制面是 UGOS Pro **Docker → 项目 → 创建/导入**：使用仓库
+[deploy/nas/compose.yaml](../deploy/nas/compose.yaml)，项目名 `maimemo-mcp`，正常状态为
+`2 / 2`。两个容器拉取同一 `ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}`；
+MCP 自动迁移并校验 schema，Worker 等待健康再采集。部署入口见
+[DEPLOYMENT.md](../DEPLOYMENT.md)。以下 1–6 节为生产运维，7–10 节为开发工作站的独立
+诊断/评测证据，不能当作 NAS 的部署依赖。首个公开镜像未发布，NAS/UGOS 实机未验证。
 
 ## 1. 部署前准备
 
-先执行 `docker version`，核对 **Server / Engine >=28.0.0**，或取得 NAS **厂商明确回补**
-localhost 发布端口修复的证据；不能用 Client/Compose 版本替代。Docker 旧版本可能允许
-同一 L2 网段访问回环发布端口，见
-[Docker 官方说明](https://docs.docker.com/engine/network/port-publishing/)。
-**两项均不满足时禁止启动应用**，并禁止连接 Tunnel；先升级或取得可核对的明确回补证据。
-项目不提供自定义路由/防火墙绕过方案。另一台同一 LAN 主机验证 NAS_IP:8000 不可达
-仅为纵深检查，**不能替代版本/回补门禁**，也不覆盖旧版 localhost 发布漏洞。
-前置门禁和验收步骤以 [部署入口](../DEPLOYMENT.md#目录与前置条件) 为准。
+先执行 `docker version`，记录 **Server / Engine >=28.0.0**，或 NAS **厂商明确回补**
+localhost 发布漏洞的可核验证据；不能用 Client/Compose 版本替代。
+[Docker 官方说明](https://docs.docker.com/engine/network/port-publishing/)指出旧版本可能
+允许同一 L2 网段访问回环发布端口。**两项均不满足时禁止启动应用**，并禁止连接 Tunnel。
+另一台同一 LAN 主机验证 NAS_IP:8000 不可达只作纵深检查，**不能替代版本/回补门禁**，
+不覆盖旧版 localhost 发布漏洞。任何 HTTP 响应都不算网络隔离通过，失败后停止整个项目。
 
-1. 为应用创建独立、最小权限的 PostgreSQL 用户和数据库，不复用管理员账号。
-2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建 `maimemo_token` 与随机生成的
-   `token_fingerprint_key`。文件只放值本身，可有一个末尾换行。应用容器固定以
-   UID 1000 / GID 10 运行，因此 Linux NAS 上应让源文件归 1000 所有且仅 owner 可读：
+数据库与应用用户均为 `maimemo`，使用已有 PostgreSQL 15+ 与 external `db_net`。
+通过 `docker network inspect db_net` 确认网络与成员可信、存在墨墨 API 出站路径。
+用户仅在本地填写真实 Docker DNS（网络内别名）、数据库密码、Token 文件和 fingerprint key
+文件；不向聊天提供秘密。`:5432` 是容器端口，不猜固定 IP 或宿主机映射。
+从 NAS 环境示例建立本地 `.env`（0600），URL 中口令需标准 percent 编码，含 `$` 的完整
+URL 使用单引号；配置预检只用 `docker compose config --quiet`，不打印展开环境变量。
 
-   ```text
-   sudo chown 1000:10 secrets/maimemo_token secrets/token_fingerprint_key
-   sudo chmod 0400 secrets/maimemo_token secrets/token_fingerprint_key
-   ```
+项目目录为 `/volume3/docker/maimemo-mcp`，Compose、`.env`、`secrets/`、`data/`、
+`backup/` 在一起。secret 源文件 UID 1000 / GID 10、`0400`，父目录 `0700` 且允许 UID
+1000 遍历；核对 NAS ACL，去除其他非管理员主体访问，避免 GID 10 的管理员组可读。
+file-source secret 的 uid/gid/mode 不会重映射源文件权限，见
+[Compose 文档](https://docs.docker.com/reference/compose-file/services/#secrets)。
+在 UGOS 容器终端执行 `id` 及两份 `/run/secrets/` 文件的 `test -r`、`test ! -w`，只记录
+退出码，不读取内容；结果应为 UID 1000 / GID 10、均可读且只读。首次启动还验证非空 UTF-8。
 
-   如果 NAS 使用管理界面 ACL，必须给数字用户 1000 仅读取
-   权限并拒绝写入，同时移除其他非管理员主体的访问权限。root/平台管理员仍可管理文件，
-   但不能把源文件保留为只有 root:root 0400 可读，否则容器会收到 `PermissionError`。
+`data/` 由 UID 1000 / GID 10 所有、`0700`，Worker 可写，MCP 只读；原子发布的公开状态
+为 `0644`。日志只用有上限的 Docker json-file，备份目录不挂载到容器。根文件系统只读、
+capabilities 全部删除、no-new-privileges，单容器限制 1 CPU、512 MiB、128 进程。
+真实 secret、个人响应、dump 不进 Git、镜像、Compose 正文或日志。
 
-   Docker 官方说明 Compose 的 file-source secret 是单文件 bind mount，`uid`、`gid`、
-   `mode` 对这种来源会被静默忽略；本项目因此不在 Compose 中伪装设置这些字段，访问权限
-   必须在 NAS 源文件 owner/group/ACL 上落实：
-   <https://docs.docker.com/reference/compose-file/services/#secrets>。
-   GID 10 可能映射 NAS 管理员组，保持文件 0400，避免扩大组读取权限；父目录需允许
-   UID 1000 遍历。执行 `sudo chown 1000:10 secrets && sudo chmod 0700 secrets` 并核对 ACL。
-3. 创建外层 `data/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器只读挂载到
-   `/var/lib/maimemo`。确保目录允许 UID 1000 遍历（`mkdir -p data && chmod 0755 data`）。
-   状态 writer 每次原子发布均设为 `0644`，文件仅含公开规范 hash、时间和 severity；
-   不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `data/`。
-4. 设置 `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
-   `postgresql+psycopg` URL；host 使用 `db_net` 上 PostgreSQL 的 Docker DNS 名，不能是
-   localhost 或固定容器 IP。先用 `docker network inspect db_net` 核对已有网络。
+## 2. UGOS 首次启动与健康检查
 
-不要把 `.env`、数据库口令、Token、fingerprint key 或真实个人响应放入构建目录、镜像
-参数、Compose YAML、工单或 Git。
+1. 完成 Engine/网络/权限门禁，确认 GHCR 已公开、匿名 amd64 拉取通过。
+2. 在 UGOS Pro Docker → 项目 → 创建/导入，选同一项目目录与交付文件。
+3. 拉取并启动项目。MCP 是唯一自动迁移执行者，使用数据库锁与有界超时；失败不监听
+   8000。健康宽限为 6 分钟，改变迁移/超时预算时重新核对。
+4. Worker 的 `service_healthy` 依赖和应用 schema 门禁同时生效；实机核验 UGOS 对依赖和
+   资源限制的支持。MCP 未健康、旧 schema、未知新 revision 均不得采集。
+5. 核对 `2 / 2`、MCP healthy、两容器日志，以及最近成功采集和连续失败数。
 
-## 2. 构建、迁移和启动
+NAS 本机访问 `/health/ready` 与 `/health/status`，地址为 `http://127.0.0.1:8000`。
+就绪要求 `alembic_version` 与镜像唯一 head 精确一致、`schema_metadata` 一致。Worker
+无 HTTP 健康端口，用结构化日志、`ingestion_run` 与 MCP 数据健康工具观察。首次采集可能
+尚未完成，不能把进程运行当作已得到学习数据。
+记录两个容器实际 digest、版本、完整 Git SHA、数据库 revision 和验收时间；必须同摘要。
+从另一台同一 LAN/L2 主机执行 `nc -vz -w 3 NAS_IP 8000`，应拒绝/超时；先确认该主机能
+访问一个已知允许的 NAS 服务，多个 LAN 接口逐一检查。
+日志出现凭据/个人正文时停止整个项目、轮换相关凭据并仅保留安全时间和 digest 证据。
+持续重启循环先在 UGOS 停止项目并检查安全错误类别，不绕过迁移或配置门禁。
 
-```text
-docker compose config --quiet
-docker compose build --pull
-app/.venv/bin/python app/scripts/check_compose_secrets.py \
-  --compose-file ./compose.yaml \
-  --token-file ./secrets/maimemo_token \
-  --fingerprint-key-file ./secrets/token_fingerprint_key \
-  --image local/maimemo-mcp:dev
-docker compose run --rm --no-deps --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
-docker compose up -d
-docker compose ps
-```
+### 2.1 Worker 漂移监测与告警
 
-先按部署入口建立主机 `app/.venv`，审计镜像标签与 `.env` 的 IMAGE_TAG 保持一致。
-secret 审计通过真实 `docker compose run` 以 UID 1000 / GID 10 读取两份挂载，并确认写入失败；
-它只输出计数和 UID/GID，不输出 secret 内容。`--synthetic --image maimemo-mcp:test` 可用于不接触
-真实 secret 的 Docker 引擎自检，但不能替代生产源文件 owner/ACL 检查。
+Worker 启动时检查公开 OpenAPI，此后每六小时执行；无需额外主机定时任务。
+状态写入 `/var/lib/maimemo/openapi-drift.json`，MCP 读取 `/health/status` 的
+`drift_status`。high 优先调查，informational 安排审阅；unavailable/stale 查看 Worker
+日志、ACL 和最近时间，超过 26 小时未成功发布为 stale。失败只记录安全错误类别，下一
+周期重试，不终止采集；由现有 NAS 告警渠道关注连续失败。状态仅含公开 hash/时间/severity。
 
-镜像使用固定 digest 的 Python 3.12 基础镜像、锁定的 `uv.lock` 和
-`uv sync --frozen --no-dev`。运行用户为 UID 1000 / GID 10，根文件系统只读，移除全部 Linux
-capabilities。`restart: unless-stopped` 只负责进程意外退出后的重启；MCP 的就绪检查真实
-查询 PostgreSQL。Worker 没有伪造的健康检查：其采集成败通过结构化日志、
-`ingestion_run` 和 MCP 数据健康工具观察。
+## 3. 后续 Tunnel 接入
 
-NAS 模板使用 external `db_net`，不会创建网络。数据库使用 Docker DNS，不能阻断墨墨 API
-必要出站连接。主机原生 Tunnel Client 访问 `http://127.0.0.1:8000/mcp`，同网容器也能访问
-MCP，必须信任并限制该网络成员。MCP 不经过 NPM、不加入 app_net、不开放公网。
-Compose 显式把内部 DNS 名 `maimemo-mcp` 加入
-`MAIMEMO_MCP_ALLOWED_HOSTS`；服务端只为该精确名字及其端口形式扩展 Host allowlist，其他
-Host 仍被 DNS rebinding 防护拒绝。非 Compose 部署默认不增加任何内部 Host。
-
-健康检查：
-
-```text
-docker compose exec maimemo-mcp /opt/venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read().decode())"
-docker compose logs --since 30m maimemo-mcp maimemo-worker
-```
-
-日志只应包含 allowlist 字段。若发现凭据或个人正文，立即停止服务、轮换相关凭据并保留
-不含敏感值的事件时间和镜像 digest 用于调查。
-
-### 2.1 周期漂移检查与告警
-
-在 NAS 的任务调度器或受监督任务中每 6 小时执行一次，工作目录设为
-`/volume3/docker/maimemo-mcp/app`；
-使用已锁定依赖的主机环境，命令为：
-
-```text
-uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml --remote https://open.maimemo.com/api_bundle.yaml --state-file /volume3/docker/maimemo-mcp/data/openapi-drift.json
-```
-
-此任务只获取公开 OpenAPI，不需要 Token。退出码 0 表示 none/informational，1 表示 high，
-2 表示获取、解析或发布失败；调度器应把 1/2 交给现有 NAS 告警渠道，并记录安全 JSON 输出。
-消费者读取 `/health/status` 的 `drift_status`：high 需要优先排查；informational 安排规范
-审阅；unavailable/stale 检查任务运行记录、目录权限和发布路径。超过 26 小时未更新即 stale，
-因此应对连续失败或未运行报警。新解析失败不会伪造成功状态，旧文件会自然过期。
-合成 Linux 容器测试验证 root 发布后 UID 1000 / GID 10 在连续两次原子替换后仍可读；实际 NAS ACL
-和定时任务是否运行仍需部署者检查。
-
-## 3. 原生 NAS Tunnel Client 的本机访问
-
-NAS 模板已包含 `127.0.0.1:8000:8000`，无需额外 override。Tunnel Client 原生运行于
-NAS 主机，连接 `http://127.0.0.1:8000/mcp`，由 supervisor 管理。不得改为
-`0.0.0.0:8000:8000`。客户端安装与平台权限按 `docs/tunnel-setup.md` 核验。
-回环绑定本身不是跨版本的绝对隔离保证：上线前执行部署入口规定的版本门禁，并从另一台
-同一 LAN 主机验证 NAS_IP:8000 不可达；任何 HTTP 响应都不等于网络隔离通过。
-该普通 LAN 地址检查不能替代版本/回补门禁，不能证明旧版漏洞已修复。
-仓库根 Compose 仍用于通用/开发部署，默认不发布端口；它不代表本 NAS 方案。
+当前私有部署不需要 Tunnel 凭据，也没有 Tunnel sidecar。后续使用受监督的原生客户端
+连接 `http://127.0.0.1:8000/mcp`，凭据仅存 NAS 本地；按
+[Tunnel 说明](tunnel-setup.md)重新核验官方版本、供应链与平台权限。Engine/回补和跨 LAN
+验收必须先通过，失败禁止连接。MCP 只发布 `127.0.0.1:8000:8000`，不加入 `app_net`、
+不接 NPM、不开放公网。`MAIMEMO_MCP_ALLOWED_HOSTS=maimemo-mcp` 只放行精确服务名，
+不改通配。`db_net` 内容器能访问 MCP，必须限制并信任其成员。Tunnel 失联不影响 Worker。
 
 ## 4. PostgreSQL 备份
 
-生产环境优先在受控 NAS 主机安装与服务器主版本兼容的 `pg_dump`、`pg_restore`、
-`createdb` 和 `psql`。脚本只用参数数组、`shell=False`、`check=True` 调用工具；数据库
-URL 从环境变量读取，不接收 URL 命令行参数。
-原生工具的 URL 参数清除 password，只通过子进程 `PGPASSWORD` 传递。URL query 采用
-fail-closed 白名单：只允许单值 `sslmode`，值域为 `disable`、`allow`、`prefer`、`require`、
-`verify-ca` 或 `verify-full`。其他键、大小写变体、重复值和自由文本均被安全拒绝；尤其不要
-用 query 覆盖 host、port、user、password、dbname、service 或把任何秘密写到 query 参数。
-query 键和值必须使用上述 ASCII 字面量，空 query、percent 编码键值、fragment 及多余分隔符
-均不接受。密码中的 `@`、`:`、`/`、`%` 必须进行标准 percent 编码；host 只接受 DNS、IPv4
-或带方括号的 IPv6。当前安全子集不支持通过 `host=` query 指定 Unix socket。
+沿用用户现有 PostgreSQL/pgAdmin 工作流备份整个 `maimemo` 数据库。应用用户和数据库名
+均为 `maimemo`，管理员连接信息在本地保存，不贴入命令行或记录中。不要仅备份状态目录、
+某张表或 schema-only；必须包括全部表、数据、迁移元数据、失败快照与反馈撤销链。
 
-```text
-export MAIMEMO_BACKUP_DATABASE_URL='postgresql://app_user:...@db.internal:5432/maimemo'
-app/.venv/bin/python app/scripts/backup_postgres.py --output /volume3/docker/maimemo-mcp/backup/maimemo-2026-10-02.dump
-```
+在 pgAdmin 对数据库执行 Backup，优先 Custom 格式，选择全库且包含数据；数据库管理员
+核对工具/服务器主版本兼容，保存数据库 owner/权限和应用角色 `maimemo` 的重建要求。
+使用唯一文件名避免覆盖，保存到 `/volume3/docker/maimemo-mcp/backup/`，目录 0700 与受限
+ACL，dump 为敏感个人数据。另行加密备份 `.env`、两份 secret（fingerprint key 保持稳定）、
+Compose 与必要状态，按保留策略复制至 NAS 外部介质。
+记录备份时间、镜像 digest/版本/Git SHA、`alembic_version`、`schema_metadata` 与校验结果。
+备份成功不能替代恢复演练；只有实际恢复和一致性检查通过才记为可恢复。
 
-Windows PowerShell 使用：
+## 5. 空库恢复演练与灾难恢复
 
-```powershell
-$env:MAIMEMO_BACKUP_DATABASE_URL = 'postgresql://app_user:...@db.internal:5432/maimemo'
-python.exe scripts/backup_postgres.py --output 'D:\backups\maimemo-2026-10-02.dump'
-```
+数据库管理员通过 pgAdmin 在隔离环境创建独立新空库，使用 Restore 导入 custom dump，
+不覆盖已有生产库。按本地保存的权限记录核对 owner、应用用户 `maimemo` 的 DDL/读写权限。
+只读核对关键表集合、行数、非空 snapshot hash、反馈撤销链、隔离失败证据，以及
+`alembic_version` 和 `schema_metadata` 的对应 revision；保存演练时间与安全结果。
+迁移 head 按备份版本确认，不能把当前 `0004` 硬套在所有历史备份上。演练库不连接采集
+Worker；成功后由管理员明确点名处置，失败保留安全错误与现场，不自动删除已有库。
 
-输出目录必须已存在，扩展名必须是 `.dump`，目标文件必须不存在。失败时只清理由该次
-命令新建的部分文件；绝不覆盖旧备份。`--docker-container` 仅供仓库的一次性集成测试，
-生产不要使用。
+生产恢复必须先停止整个项目并核实两个容器停止，由管理员确认精确目标与备份，再恢复
+完整数据库；检查一致性和权限后启用对应镜像。恢复会改写数据，不得在项目运行时操作。
+不得用清表绕过 downgrade 保护；0002/0003 对不可表示数据、0004 对非空失败证据拒绝降级。
 
-主机备份进程可能无法解析 Docker DNS，需使用数据库管理员提供的主机可达私有地址。
-示例 URL 的省略号不是可执行凭据；通过受控环境注入真实 URL，不放在命令行或日志。
+## 6. 更新与回退
 
-## 5. 空库恢复演练
+正常兼容更新：审阅发布说明，完成全库备份与恢复演练，记录当前 digest。使用本地
+`IMAGE_TAG=stable`，在 UGOS 项目一键拉取/更新/重建；保留 `.env`、secret 和持久目录。
+验收同一新 digest、`2 / 2`、健康、日志、revision、最近成功采集与跨 LAN 不可达。
 
-恢复只允许新数据库，且名称必须匹配 `maimemo_restore_[a-z0-9_]{8,47}`（总长不超过
-PostgreSQL 标识符上限 63 字节）。确认值必须和目标
-名称完全相同；目标已存在时始终拒绝，不提供覆盖开关。
+破坏性或未证明与上一运行版本兼容的迁移：先停止整个项目，确认全库备份与恢复演练，
+再按维护升级流程指定版本重建；不能在旧 Worker 仍运行时迁移。迁移失败保持停机并调查。
+普通一键更新不代表零停机，也不省略备份和验收。
 
-```text
-export MAIMEMO_RESTORE_ADMIN_URL='postgresql://restore_admin:...@db.internal:5432/postgres'
-app/.venv/bin/python app/scripts/restore_postgres.py \
-  --backup /volume3/docker/maimemo-mcp/backup/maimemo-2026-10-02.dump \
-  --target-database maimemo_restore_drill_20261002 \
-  --confirm-disposable-target maimemo_restore_drill_20261002
-```
+回退前验证旧镜像与当前精确 schema 的组合；新 revision 往往被旧镜像拒绝，不能只凭
+版本号判定。停止整个项目，`IMAGE_TAG` 改为上一不可变 `vX.Y.Z`，拉取并重建，再核对旧
+记录 digest 和所有关键路径。如果 schema 不兼容，镜像不能单独回退：保持停机，先恢复
+更新前整个数据库，再启动对应旧镜像。自动启动永不 downgrade、清表或恢复备份。
 
-脚本在恢复后验证关键表集合、非空 snapshot hash、反馈撤销链接，以及
-`alembic_version` 与 `schema_metadata` 都处于当前迁移头 `0004`。检查也包括隔离失败快照表。
-随后仍要用只读 SQL 核对
-各表行数和抽样 hash。若 `pg_restore` 或一致性校验失败，脚本只会自动 `dropdb` 本进程刚
-创建、且已通过 disposable 名称和二次确认校验的精确目标；清理失败时保留原始错误并附加
-人工清理提示。成功的演练库不会自动删除，验收完成后由数据库管理员明确点名删除。脚本
-不会删除或改写源库、用户库或任何已有目标。
+## 7. 开发工作站的只读冒烟与协议检查
 
-## 6. 升级与回滚
-
-1. 先执行新备份和空库恢复演练。
-2. 构建带唯一版本标签的镜像并记录 digest；不要以 `latest` 作为回滚证据。
-3. 执行迁移，再逐个重建 MCP 与 Worker。
-4. 核对 `/health/ready`、迁移版本、最近采集时间和连续失败数。
-5. 应用回滚只能切回已记录 digest；数据库迁移是否可降级必须单独验证。0002/0003 对不可
-   表示的数据会拒绝降级；0004 的 `failed_api_snapshot` 非空时拒绝丢失失败证据。
-   不得用强制清表绕过；失败快照与学习原始快照同样按敏感个人证据保护并纳入备份。
-
-Tunnel 中断不影响 Worker。数据库不可用时，就绪检查失败且采集不得以内存结果冒充已
-持久化成功。
-
-## 7. 只读冒烟与协议检查
+本节脚本只在保留源码和锁定开发依赖的受控工作站运行，不在 UGOS 项目目录执行，也不是
+NAS 首次部署、更新或日常运维的前置条件。
 
 真实接口冒烟必须同时满足两个门禁：用户明确提供只读 Token 文件，且命令显式带
 `--confirm-readonly`。脚本只运行代码内固定的 17 项 allowlist；不要修改为从服务发现结果
@@ -280,7 +212,7 @@ docker compose -f compose.test.yaml down
 | 4 | 返回薄弱词、原因、置信度和截止时间 | 本地通过 | `test_worker_persists_scores_visible_through_real_mcp` 通过实际 Worker→PG→评分→MCP；`test_scoring_failure_rolls_back_history_and_success_slot_then_retries` 验证评分失败回滚与重试；评分和组合工具测试 | 仅外部 HTTP 使用合成边界；初始权重是假设，仍需至少两周真实数据评估，不能静默改权重。 |
 | 5 | 可记录和撤销混淆反馈 | 本地通过 | `tests/integration/test_feedback_service.py`、`tests/mcp/test_feedback_tools.py` | 未做真实 ChatGPT 确认交互；替代验证追加、幂等、方向和撤销链。 |
 | 6 | MCP 未注册墨墨写操作 | 本地通过 | SDK 发现恰好 24 工具，其中 17 原子只读、5 组合只读、2 本地反馈；`tests/evaluation/test_safety_boundaries.py` | 未来新增工具仍必须更新固定审计；smoke 不会自动执行未来接口。 |
-| 7 | Token 不进入镜像、日志、数据库和工具结果 | 本地通过 | 文件密钥配置、日志脱敏测试、MCP 错误边界、Docker secret 合成审计及 smoke 输出脱敏测试 | 未审计生产 NAS ACL 和真实日志；部署时必须运行 `check_compose_secrets.py` 并巡检日志。 |
+| 7 | Token 不进入镜像、日志、数据库和工具结果 | 本地通过 | 文件密钥配置、日志脱敏测试、MCP 错误边界、Docker secret 合成审计及 smoke 输出脱敏测试 | 未审计生产 NAS ACL 和真实日志；部署时必须完成第 1 节源文件 ACL 和容器只读检查并巡检日志。 |
 | 8 | 数据缺失、认证失败、限流和规范漂移可观察 | 本地通过 | 数据健康 MCP 测试、传输/共享限流测试、`tests/unit/test_openapi_drift.py`、结构化日志测试 | 真实 401/429 和 Tunnel 状态未触发；替代为确定性错误注入，仍有平台告警集成风险。 |
 | 9 | PostgreSQL 备份可恢复到空库并通过一致性检查 | 本地通过 | `tests/integration/test_backup_restore.py` 对 disposable PostgreSQL 执行 custom dump、恢复和撤销链检查 | NAS 的 PostgreSQL/客户端版本、存储权限未演练；上线前必须按第 4、5 节真实演练。 |
 | 10 | ChatGPT 经 Secure MCP Tunnel 完成代表性对话 | 环境门禁，未通过 | 语料结构和安全边界测试；SDK/HTTP `/mcp` 协议替代检查 | 阻塞是没有运行中的 Secure MCP Tunnel 与 ChatGPT 工作区连接，也未获用户授权 Token。剩余风险包括 Tunnel 网络/认证、模型工具选择、参数生成和确认交互。 |
@@ -292,7 +224,7 @@ docker compose -f compose.test.yaml down
 `test_drift_permissions.py` 在真实 Linux 容器检查 UID 1000 / GID 10 两次替换后可读。
 这些测试不会读取真实 Token、连接用户数据库或建立 Tunnel。
 
-## 10. 最终本地验证命令
+## 10. 开发工作站的最终本地验证命令
 
 从锁定依赖的干净检出执行：
 
@@ -306,7 +238,7 @@ docker build -t maimemo-mcp:test .
 git status --short
 ```
 
-上面本地验证在源码目录运行，根 Compose 为通用/开发配置；NAS 模板另需在外层目录
-执行 `docker compose config --quiet`。配置检查需要提供一个语法有效但不必可连接的
+上面本地验证在开发工作站源码目录运行，根 Compose 为通用/开发配置；NAS 使用 UGOS 项目
+与交付模板，配置预检只执行 `docker compose config --quiet`。配置检查需要提供一个语法有效但不必可连接的
 `MAIMEMO_DATABASE_URL`；构建和配置检查不得注入真实 Token。真实墨墨冒烟与 Secure MCP
 Tunnel/ChatGPT 评测是独立环境门禁，只有观察到其实际输出后才能改为通过。

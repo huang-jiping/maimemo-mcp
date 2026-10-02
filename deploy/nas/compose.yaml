@@ -1,10 +1,12 @@
 name: maimemo-mcp
 
 x-maimemo-common: &maimemo-common
-  image: local/maimemo-mcp:${IMAGE_TAG:-dev}
-  build:
-    context: ./app
-    dockerfile: Dockerfile
+  image: ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}
+  pull_policy: always
+  user: "1000:10"
+  cpus: 1.0
+  mem_limit: 512m
+  pids_limit: 128
   restart: unless-stopped
   init: true
   env_file:
@@ -66,12 +68,21 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      # Allow the default connection, migration-lock and statement timeout budget.
+      start_period: 6m
 
   maimemo-worker:
     <<: *maimemo-common
     container_name: maimemo-worker
     command: ["worker"]
+    depends_on:
+      maimemo-mcp:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ./data
+        target: /var/lib/maimemo
+        read_only: false
 
 networks:
   db_net:

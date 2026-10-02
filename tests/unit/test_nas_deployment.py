@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,8 @@ def test_nas_guide_gates_localhost_isolation_on_engine_fix_and_lan_verification(
         "https://docs.docker.com/engine/network/port-publishing/",
     ):
         assert requirement in prerequisites, f"Missing deployment gate: {requirement}"
-    acceptance = guide.split("## 构建、迁移、启动和检查", 1)[1].split("## Tunnel", 1)[0]
+    assert "## UGOS 首次部署与检查" in guide, "Missing UGOS deployment acceptance flow"
+    acceptance = guide.split("## UGOS 首次部署与检查", 1)[1].split("## Tunnel", 1)[0]
     for requirement in (
         "另一台同一 LAN", "NAS_IP:8000", "不可达", "nc -vz -w 3 NAS_IP 8000",
         "不能将 HTTP 403", "不得连接 Tunnel", "不能替代版本/回补门禁",
@@ -62,10 +64,15 @@ def test_nas_connects_only_existing_database_network_and_loopback() -> None:
     assert compose["services"]["maimemo-worker"]["command"] == ["worker"]
 
 
-def test_nas_builds_nested_source_and_retains_runtime_hardening() -> None:
+def test_nas_pulls_shared_release_and_retains_runtime_hardening() -> None:
     for service in nas_compose()["services"].values():
-        assert service["build"] == {"context": "./app", "dockerfile": "Dockerfile"}
-        assert service["image"] == "local/maimemo-mcp:${IMAGE_TAG:-dev}"
+        assert "build" not in service
+        assert service["image"] == "ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}"
+        assert service["pull_policy"] == "always"
+        assert service["user"] == "1000:10"
+        assert 0 < float(service["cpus"]) <= 2
+        assert service["mem_limit"] == "512m"
+        assert 0 < service["pids_limit"] <= 256
         assert service["restart"] == "unless-stopped"
         assert service["init"] is True
         assert service["env_file"] == [".env"]
@@ -76,10 +83,6 @@ def test_nas_builds_nested_source_and_retains_runtime_hardening() -> None:
         assert service["logging"] == {
             "driver": "json-file", "options": {"max-size": "10m", "max-file": "3"},
         }
-        assert service["volumes"] == [{
-            "type": "bind", "source": "./data", "target": "/var/lib/maimemo",
-            "read_only": True,
-        }]
         assert service["secrets"] == ["maimemo_token", "token_fingerprint_key"]
     compose = nas_compose()
     assert compose["secrets"] == {
@@ -89,7 +92,21 @@ def test_nas_builds_nested_source_and_retains_runtime_hardening() -> None:
     check = compose["services"]["maimemo-mcp"]["healthcheck"]
     assert "/health/ready" in check["test"][-1]
     assert "127.0.0.1:8000" in check["test"][-1]
+    assert check["start_period"] == "6m"
+    assert compose["services"]["maimemo-worker"]["depends_on"] == {
+        "maimemo-mcp": {"condition": "service_healthy"},
+    }
     assert "healthcheck" not in compose["services"]["maimemo-worker"]
+
+
+def test_nas_worker_can_publish_drift_state_and_mcp_cannot_modify_it() -> None:
+    services = nas_compose()["services"]
+    for name, readonly in (("maimemo-mcp", True), ("maimemo-worker", False)):
+        assert services[name]["volumes"] == [{
+            "type": "bind", "source": "./data", "target": "/var/lib/maimemo",
+            "read_only": readonly,
+        }]
+    assert services["maimemo-mcp"]["environment"] == services["maimemo-worker"]["environment"]
 
 
 def test_nas_example_loads_settings_without_embedded_credentials() -> None:
@@ -99,7 +116,11 @@ def test_nas_example_loads_settings_without_embedded_credentials() -> None:
         .splitlines() if line and not line.startswith("#")
     )
     settings = Settings.load(values)
-    assert settings.database_url == "postgresql+psycopg://postgresql/maimemo"
+    assert settings.database_url == (
+        "postgresql+psycopg://maimemo:REPLACE_WITH_URL_ENCODED_PASSWORD"
+        "@replace-with-db-net-dns.invalid:5432/maimemo?sslmode=disable"
+    )
+    assert values["IMAGE_TAG"] == "stable"
     assert settings.token_file == Path("/run/secrets/maimemo_token")
     assert settings.token_fingerprint_key_file == Path("/run/secrets/token_fingerprint_key")
     assert settings.openapi_drift_state_file == Path("/var/lib/maimemo/openapi-drift.json")
@@ -107,6 +128,62 @@ def test_nas_example_loads_settings_without_embedded_credentials() -> None:
     assert settings.mcp_port == 8000
     assert "MAIMEMO_TOKEN" not in values
     assert "TZ" in nas_compose()["services"]["maimemo-mcp"]["environment"]
+
+
+@pytest.mark.parametrize("document", ["DEPLOYMENT.md", "docs/operations.md"])
+def test_nas_guides_cover_ugos_lifecycle_backup_and_readonly_secret_checks(document: str) -> None:
+    guide = (ROOT / document).read_text(encoding="utf-8")
+    for requirement in (
+        "UGOS Pro", "Docker → 项目", "创建/导入", "deploy/nas/compose.yaml",
+        "ghcr.io/huang-jiping/maimemo-mcp", "IMAGE_TAG", "stable", "vX.Y.Z", "digest",
+        "2 / 2", "拉取", "重建", "自动迁移", "上一", "破坏性", "停止整个项目",
+        "pgAdmin", "整个 `maimemo` 数据库", "恢复演练", "alembic_version", "schema_metadata",
+        "UID 1000 / GID 10", "0400", "ACL", "只读", "六小时", "0644", "0700",
+        "真实 Docker DNS", "本地 `.env`", "fingerprint key", "未验证", "未发布",
+    ):
+        assert requirement in guide, f"{document} missing deployment contract: {requirement}"
+
+
+@pytest.mark.parametrize("document", ["DEPLOYMENT.md", "docs/operations.md", "README.md"])
+def test_nas_production_instructions_do_not_depend_on_source_or_host_scripts(document: str) -> None:
+    guide = (ROOT / document).read_text(encoding="utf-8")
+    if document == "README.md":
+        guide = guide.split("NAS 私有部署", 1)[1].split("## 只读真实接口冒烟", 1)[0]
+    elif document == "docs/operations.md":
+        guide = guide.split("## 7.", 1)[0]
+    for forbidden in (
+        r"git\s+clone", r"app/", r"docker\s+compose\s+build", r"local/maimemo-mcp",
+        r"\buv\s+(?:run|sync)", r"scripts/", r"-m\s+alembic\s+upgrade",
+    ):
+        assert not re.search(forbidden, guide), f"{document} has legacy instruction: {forbidden}"
+
+
+def test_nas_sources_do_not_embed_secret_values_or_require_tunnel_credentials() -> None:
+    compose = nas_compose()
+    for service in compose["services"].values():
+        environment = service["environment"]
+        assert environment["MAIMEMO_DATABASE_URL"] == (
+            "${MAIMEMO_DATABASE_URL:?Set the external PostgreSQL URL}"
+        )
+        assert "MAIMEMO_TOKEN" not in environment
+        assert "CONTROL_PLANE_API_KEY" not in environment
+        assert "labels" not in service
+    sources = [NAS / "compose.yaml", NAS / ".env.example", ROOT / "DEPLOYMENT.md",
+               ROOT / "docs/operations.md", ROOT / "docs/tunnel-setup.md", ROOT / "README.md"]
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        assert not re.search(r"\b(?:ghp_|github_pat_|sk-proj-)[A-Za-z0-9_]{16,}", text)
+        assert not re.search(r"(?m)^\s*(?:MAIMEMO_TOKEN|CONTROL_PLANE_API_KEY)\s*=\s*\S+", text)
+
+
+def test_tunnel_guide_keeps_future_connection_behind_private_nas_security_gates() -> None:
+    guide = (ROOT / "docs/tunnel-setup.md").read_text(encoding="utf-8")
+    for requirement in (
+        "后续", "当前私有部署", "不需要", "UGOS Pro", ">=28.0.0", "厂商明确回补",
+        "NAS_IP:8000", "禁止连接 Tunnel", "http://127.0.0.1:8000/mcp",
+        "本地", "未验证",
+    ):
+        assert requirement in guide, f"Missing future Tunnel gate: {requirement}"
 
 
 @pytest.mark.parametrize("uid,gid", [(1000, 10), (10001, 10001), (1000, 10001)])

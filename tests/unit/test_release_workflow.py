@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 import subprocess
 from http.client import BadStatusLine, IncompleteRead
 from pathlib import Path
@@ -97,7 +98,7 @@ def test_release_repeats_ci_and_serializes_master_tag_releases() -> None:
     assert publish["on"] == {"push": {"tags": ["v[0-9]+.[0-9]+.[0-9]+"]}}
     assert publish["permissions"] == {"contents": "read"}
     assert publish["concurrency"] == {
-        "group": "ghcr-maimemo-mcp-stable", "cancel-in-progress": "false",
+        "group": "ghcr-maimemo-mcp-stable", "cancel-in-progress": "false", "queue": "max",
     }
     assert publish["jobs"]["quality"]["uses"] == "./.github/workflows/ci.yml"
     job = publish["jobs"]["publish"]
@@ -188,8 +189,10 @@ def test_master_ancestry_uses_real_git_history(release: Any, tmp_path: Path) -> 
 
 
 class Registry:
-    def __init__(self, initial: dict[str, str] | None = None) -> None:
+    def __init__(self, initial: dict[str, str] | None = None,
+                 versions: dict[str, Any] | None = None) -> None:
         self.refs = {DIGEST: DIGEST, **(initial or {})}
+        self.versions = {DIGEST: "v0.1.0", OTHER_DIGEST: "v0.2.0", **(versions or {})}
         self.events: list[tuple[str, str]] = []
 
     def digest(self, reference: str) -> str | None:
@@ -199,6 +202,10 @@ class Registry:
     def tag(self, reference: str, digest: str) -> None:
         self.events.append(("write", reference))
         self.refs[reference] = digest
+
+    def version(self, digest: str) -> str:
+        self.events.append(("version", digest))
+        return self.versions[digest]
 
 
 def test_publish_promotes_verified_immutable_digest_last(release: Any) -> None:
@@ -210,6 +217,7 @@ def test_publish_promotes_verified_immutable_digest_last(release: Any) -> None:
         ("read", DIGEST), ("read", "v0.1.0"), ("read", f"sha-{COMMIT}"),
         ("write", "v0.1.0"), ("write", f"sha-{COMMIT}"),
         ("read", "v0.1.0"), ("read", f"sha-{COMMIT}"),
+        ("read", "stable"),
         ("write", "stable"), ("read", "stable"),
     ]
 
@@ -219,6 +227,68 @@ def test_publish_retry_preserves_same_digest_immutable_tags(release: Any) -> Non
     release.publish_release(registry, "v0.1.0", COMMIT, DIGEST)
     assert [event for event in registry.events if event[0] == "write"] == [
         ("write", "stable")]
+
+
+def test_old_release_retry_preserves_newer_stable(release: Any) -> None:
+    registry = Registry({"v0.1.0": DIGEST, f"sha-{COMMIT}": DIGEST,
+                         "v0.2.0": OTHER_DIGEST, "stable": OTHER_DIGEST})
+    assert release.publish_release(registry, "v0.1.0", COMMIT, DIGEST) == OTHER_DIGEST
+    assert registry.refs["stable"] == OTHER_DIGEST
+    assert all(event[0] != "write" for event in registry.events)
+
+
+def test_current_release_retry_is_idempotent(release: Any) -> None:
+    registry = Registry({"v0.1.0": DIGEST, f"sha-{COMMIT}": DIGEST, "stable": DIGEST})
+    assert release.publish_release(registry, "v0.1.0", COMMIT, DIGEST) == DIGEST
+    assert registry.refs["stable"] == DIGEST
+    assert all(event[0] != "write" for event in registry.events)
+
+
+@pytest.mark.parametrize("candidate,stable,wanted", [
+    ("v0.2.0", "v0.10.0", OTHER_DIGEST),
+    ("v0.10.0", "v0.2.0", DIGEST),
+    ("v1.0.0", "v0.99.99", DIGEST),
+    ("v1.0.1", "v1.0.10", OTHER_DIGEST),
+])
+def test_stable_order_compares_numeric_semver_components(release: Any, candidate: str,
+                                                       stable: str, wanted: str) -> None:
+    registry = Registry({candidate: DIGEST, f"sha-{COMMIT}": DIGEST,
+                         stable: OTHER_DIGEST, "stable": OTHER_DIGEST},
+                        {DIGEST: candidate, OTHER_DIGEST: stable})
+    assert release.publish_release(registry, candidate, COMMIT, DIGEST) == wanted
+    assert registry.refs["stable"] == wanted
+
+
+@pytest.mark.parametrize("version", [None, "private https://registry.invalid", "v01.2.3"])
+def test_unknown_stable_version_fails_safely_without_promotion(release: Any,
+                                                            version: Any) -> None:
+    registry = Registry({"v0.1.0": DIGEST, f"sha-{COMMIT}": DIGEST,
+                         "stable": OTHER_DIGEST}, {OTHER_DIGEST: version})
+    with pytest.raises(release.ReleaseError, match="^stable version metadata is invalid$"):
+        release.publish_release(registry, "v0.1.0", COMMIT, DIGEST)
+    assert registry.refs["stable"] == OTHER_DIGEST
+    assert ("write", "stable") not in registry.events
+
+
+def test_stable_version_alias_must_match_its_digest(release: Any) -> None:
+    registry = Registry({"v0.1.0": DIGEST, f"sha-{COMMIT}": DIGEST,
+                         "stable": OTHER_DIGEST})
+    with pytest.raises(release.ReleaseError, match="^stable image verification failed$"):
+        release.publish_release(registry, "v0.1.0", COMMIT, DIGEST)
+    assert registry.refs["stable"] == OTHER_DIGEST
+
+
+def test_cli_old_release_reports_preserved_stable(release: Any, monkeypatch: Any,
+                                                capsys: Any) -> None:
+    registry = Registry({"v0.1.0": DIGEST, f"sha-{COMMIT}": DIGEST,
+                         "v0.2.0": OTHER_DIGEST, "stable": OTHER_DIGEST})
+    monkeypatch.setattr(release, "GhcrRegistry", lambda *args: registry)
+    monkeypatch.setattr(release, "require_master_ancestry", lambda commit: None)
+    assert release.main(["publish", "--tag", "v0.1.0", "--commit", COMMIT,
+                         "--digest", DIGEST]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "immutable release verified; newer stable preserved\n"
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize("reference", ["v0.1.0", f"sha-{COMMIT}"])
@@ -399,6 +469,46 @@ def test_registry_tag_failure_does_not_expose_process_output(release: Any, monke
     with pytest.raises(release.ReleaseError, match="^registry tag update failed$"):
         registry.tag("stable", DIGEST)
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_registry_version_reads_config_at_exact_digest(release: Any, monkeypatch: Any,
+                                                     wrapped: bool) -> None:
+    registry = ghcr(release, monkeypatch)
+    config = {"config": {"Labels": {"org.opencontainers.image.version": "v0.2.0"}}}
+    payload = {"linux/amd64": config} if wrapped else config
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        assert command == ["docker", "buildx", "imagetools", "inspect", "--format",
+                           "{{json .Image}}", f"{IMAGE}@{OTHER_DIGEST}"]
+        assert kwargs == {"capture_output": True, "timeout": 120, "check": False}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    assert registry.version(OTHER_DIGEST) == "v0.2.0"
+
+
+@pytest.mark.parametrize("payload", [b"synthetic-auth https://registry.invalid", b"null",
+                                   b"{}", b'{"config":{"Labels":{}}}',
+                                   b'{"config":{"Labels":{"org.opencontainers.image.version":'
+                                   b'"private https://registry.invalid"}}}'])
+def test_registry_version_metadata_errors_are_fixed_safe_messages(release: Any,
+                                                                monkeypatch: Any,
+                                                                payload: bytes) -> None:
+    registry = ghcr(release, monkeypatch)
+    monkeypatch.setattr(release.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, payload))
+    with pytest.raises(release.ReleaseError, match="^registry version lookup failed$"):
+        registry.version(OTHER_DIGEST)
+
+
+def test_registry_version_process_failure_never_echoes_credentials(release: Any,
+                                                                 monkeypatch: Any) -> None:
+    registry = ghcr(release, monkeypatch)
+    monkeypatch.setattr(release.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 1, b"private", b"synthetic-auth"))
+    with pytest.raises(release.ReleaseError, match="^registry version lookup failed$"):
+        registry.version(OTHER_DIGEST)
 
 
 def test_docker_preserves_runtime_identity_and_adds_oci_metadata() -> None:

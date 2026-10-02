@@ -80,6 +80,8 @@ class Registry(Protocol):
 
     def tag(self, reference: str, digest: str) -> None: ...
 
+    def version(self, digest: str) -> str: ...
+
 
 def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> str:
     validate_tag(tag)
@@ -95,6 +97,28 @@ def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> s
             registry.tag(alias, digest)
     if any(registry.digest(alias) != digest for alias in aliases):
         raise ReleaseError("image digest verification failed")
+    stable_digest = registry.digest("stable")
+    if stable_digest is not None:
+        validate_digest(stable_digest)
+        stable_version = registry.version(stable_digest)
+        try:
+            if not isinstance(stable_version, str):
+                raise ReleaseError("stable version metadata is invalid")
+            validate_tag(stable_version)
+        except ReleaseError:
+            raise ReleaseError("stable version metadata is invalid") from None
+        if registry.digest(stable_version) != stable_digest:
+            raise ReleaseError("stable image verification failed")
+        # Canonical digit strings compare numerically by length then lexical value.
+        # This also avoids Python's maximum int-string length for large versions.
+        stable_order = tuple((len(part), part) for part in stable_version[1:].split("."))
+        release_order = tuple((len(part), part) for part in tag[1:].split("."))
+        if stable_order > release_order:
+            return stable_digest
+        if stable_order == release_order:
+            if stable_digest != digest:
+                raise ReleaseError("stable image tag conflicts")
+            return stable_digest
     # One tag update from the verified manifest; there is no separate stable build.
     registry.tag("stable", digest)
     if registry.digest("stable") != digest:
@@ -167,6 +191,30 @@ class GhcrRegistry:
         if result.returncode != 0:
             raise ReleaseError("registry tag update failed")
 
+    def version(self, digest: str) -> str:
+        """Read version metadata from the already resolved immutable digest."""
+        validate_digest(digest)
+        try:
+            result = subprocess.run(
+                ["docker", "buildx", "imagetools", "inspect", "--format",
+                 "{{json .Image}}", f"{IMAGE}@{digest}"],
+                capture_output=True, timeout=120, check=False,
+            )
+            if result.returncode != 0:
+                raise ReleaseError("registry version lookup failed")
+            image = json.loads(result.stdout)
+            if not isinstance(image, dict):
+                raise ValueError
+            if "linux/amd64" in image:
+                image = image["linux/amd64"]
+            version = image["config"]["Labels"]["org.opencontainers.image.version"]
+            if not isinstance(version, str):
+                raise ValueError
+            return validate_tag(version)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError,
+                ReleaseError):
+            raise ReleaseError("registry version lookup failed") from None
+
 
 class SafeParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
@@ -191,7 +239,10 @@ def main(argv: list[str] | None = None) -> int:
             registry = GhcrRegistry(os.environ.get("GITHUB_ACTOR", ""),
                                     os.environ.get("GITHUB_TOKEN", ""))
             digest = publish_release(registry, args.tag, args.commit, args.digest)
-            print(f"released {args.tag} sha-{args.commit} stable {digest}")
+            if digest != args.digest:
+                print("immutable release verified; newer stable preserved")
+            else:
+                print(f"released {args.tag} sha-{args.commit} stable {digest}")
     except ReleaseError as error:
         print(str(error), file=sys.stderr)
         return 1

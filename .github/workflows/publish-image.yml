@@ -11,6 +11,7 @@ permissions:
 concurrency:
   group: ghcr-maimemo-mcp-stable
   cancel-in-progress: false
+  queue: max
 
 env:
   IMAGE: ghcr.io/huang-jiping/maimemo-mcp

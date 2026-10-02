@@ -1,0 +1,2 @@
+# Preserve the official snapshot byte-for-byte so its SHA-256 survives checkout.
+openapi/maimemo-api.yaml -text

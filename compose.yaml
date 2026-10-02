@@ -1,0 +1,72 @@
+name: maimemo-learning-foundation
+
+x-maimemo-common: &maimemo-common
+  image: ${MAIMEMO_IMAGE:-maimemo-mcp:local}
+  build:
+    context: .
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment: &maimemo-environment
+    MAIMEMO_DATABASE_URL: ${MAIMEMO_DATABASE_URL:?Set the external PostgreSQL URL}
+    MAIMEMO_TOKEN_FILE: /run/secrets/maimemo_token
+    MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE: /run/secrets/token_fingerprint_key
+    MAIMEMO_TIMEZONE: ${MAIMEMO_TIMEZONE:-Asia/Shanghai}
+    MAIMEMO_MCP_HOST: 0.0.0.0
+    MAIMEMO_MCP_PORT: 8000
+    MAIMEMO_MCP_ALLOWED_HOSTS: maimemo-mcp
+    MAIMEMO_TODAY_INTERVAL_MINUTES: ${MAIMEMO_TODAY_INTERVAL_MINUTES:-30}
+    MAIMEMO_RECORDS_INTERVAL_MINUTES: ${MAIMEMO_RECORDS_INTERVAL_MINUTES:-120}
+    MAIMEMO_LOG_LEVEL: ${MAIMEMO_LOG_LEVEL:-INFO}
+    MAIMEMO_OPENAPI_DRIFT_STATE_FILE: /var/lib/maimemo/openapi-drift.json
+  secrets:
+    - maimemo_token
+    - token_fingerprint_key
+  volumes:
+    - type: bind
+      source: ./var
+      target: /var/lib/maimemo
+      read_only: true
+  networks:
+    - maimemo-private
+  stop_grace_period: 30s
+
+services:
+  maimemo-mcp:
+    <<: *maimemo-common
+    command: ["mcp"]
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - /opt/venv/bin/python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  maimemo-worker:
+    <<: *maimemo-common
+    command: ["worker"]
+
+networks:
+  maimemo-private:
+    driver: bridge
+    internal: false
+
+secrets:
+  maimemo_token:
+    file: ${MAIMEMO_TOKEN_SECRET_FILE:-./secrets/maimemo_token}
+  token_fingerprint_key:
+    file: ${MAIMEMO_TOKEN_FINGERPRINT_KEY_SECRET_FILE:-./secrets/token_fingerprint_key}

@@ -37,10 +37,15 @@ def test_startup_configuration_failure_is_controlled_and_secret_free(
 
 
 @pytest.mark.parametrize("mode", ["worker", "mcp"])
+@pytest.mark.parametrize("private_url", [
+    "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
+    "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+])
 def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     mode: str,
+    private_url: str,
 ) -> None:
     import os
 
@@ -49,7 +54,6 @@ def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback
     for name in list(os.environ):
         if name.startswith("MAIMEMO_"):
             monkeypatch.delenv(name)
-    private_url = "postgresql+psycopg://u:prefix@host:LEAK@localhost/d"
     monkeypatch.setenv("MAIMEMO_DATABASE_URL", private_url)
     monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
     monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
@@ -61,4 +65,33 @@ def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback
     assert combined == "configuration_error database_url:invalid\n"
     assert "LEAK" not in combined
     assert private_url not in combined
+    assert "Traceback" not in combined
+
+
+@pytest.mark.parametrize("mode", ["worker", "mcp"])
+def test_runtime_preflight_controls_late_engine_url_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    from pathlib import Path
+
+    from maimemo_mcp.config import Settings
+    from maimemo_mcp.runtime import main
+
+    settings = Settings.model_construct(
+        database_url=(
+            "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d"
+        ),
+        token_file=Path("unused"),
+        token_fingerprint_key_file=Path("unused"),
+    )
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+
+    assert main([mode]) == 2
+
+    output = capsys.readouterr()
+    combined = output.err + output.out
+    assert combined == "configuration_error database_url:invalid\n"
+    assert "LEAK" not in combined
     assert "Traceback" not in combined

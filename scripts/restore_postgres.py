@@ -155,14 +155,9 @@ def _restore_new_database(
         raise
 
 
-def main() -> int:
-    args = parser().parse_args()
+def _run(args: argparse.Namespace) -> int:
     backup = resolved_dump_input(args.backup)
-    try:
-        admin_url = database_url_from_env(args.admin_url_env)
-    except DatabaseUrlError:
-        print("configuration_error database_url:invalid", file=sys.stderr)
-        return 2
+    admin_url = database_url_from_env(args.admin_url_env)
     assert admin_url.database is not None
     _validate_target(args.target_database, args.confirm_disposable_target, admin_url.database)
     tools = PostgresTools(args.pg_bin_dir, args.docker_container)
@@ -180,6 +175,15 @@ def main() -> int:
     _restore_new_database(tools, admin_url, args.target_database, backup)
     print(f"Restore validated in disposable database: {args.target_database}")
     return 0
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        return _run(args)
+    except DatabaseUrlError:
+        print("configuration_error database_url:invalid", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

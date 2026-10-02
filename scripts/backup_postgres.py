@@ -27,14 +27,9 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def main() -> int:
-    args = parser().parse_args()
+def _run(args: argparse.Namespace) -> int:
     output = resolved_new_dump_path(args.output)
-    try:
-        database_url = database_url_from_env(args.database_url_env)
-    except DatabaseUrlError:
-        print("configuration_error database_url:invalid", file=sys.stderr)
-        return 2
+    database_url = database_url_from_env(args.database_url_env)
     tools = PostgresTools(args.pg_bin_dir, args.docker_container)
     tools.validate("pg_dump")
     dsn, environment = tools.database_argument(database_url)
@@ -54,6 +49,15 @@ def main() -> int:
         raise
     print(f"Backup created: {output}")
     return 0
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        return _run(args)
+    except DatabaseUrlError:
+        print("configuration_error database_url:invalid", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

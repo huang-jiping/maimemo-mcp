@@ -114,8 +114,10 @@ Host 范围。
 生产环境优先在受控 NAS 主机安装与服务器主版本兼容的 `pg_dump`、`pg_restore`、
 `createdb` 和 `psql`。脚本只用参数数组、`shell=False`、`check=True` 调用工具；数据库
 URL 从环境变量读取，不接收 URL 命令行参数。
-原生工具的 URL 参数清除 password，只通过子进程 `PGPASSWORD` 传递。query 中的
-`password`、`sslpassword`、`passfile` 凭据形式被安全拒绝；不要把秘密写到 query 参数。
+原生工具的 URL 参数清除 password，只通过子进程 `PGPASSWORD` 传递。URL query 采用
+fail-closed 白名单：只允许单值 `sslmode`，值域为 `disable`、`allow`、`prefer`、`require`、
+`verify-ca` 或 `verify-full`。其他键、大小写变体、重复值和自由文本均被安全拒绝；尤其不要
+用 query 覆盖 host、port、user、password、dbname、service 或把任何秘密写到 query 参数。
 
 ```text
 export MAIMEMO_BACKUP_DATABASE_URL='postgresql://app_user:...@db.internal:5432/maimemo'

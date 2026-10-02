@@ -77,6 +77,46 @@ def test_database_url_requires_async_psycopg_driver(environ: dict[str, str]) -> 
     ]
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        *(f"{key}=REVIEW_SECRET" for key in (
+            "host", "hostaddr", "port", "user", "password", "passfile", "dbname",
+            "service", "servicefile", "sslpassword",
+        )),
+        "PORT=REVIEW_SECRET",
+        "host=first&host=REVIEW_SECRET",
+        "application_name=REVIEW_SECRET",
+        "sslmode=REVIEW_SECRET",
+        "sslmode=require&sslmode=REVIEW_SECRET",
+    ],
+)
+def test_database_url_query_is_fail_closed_without_retaining_values(
+    environ: dict[str, str], query: str,
+) -> None:
+    import traceback
+
+    environ["MAIMEMO_DATABASE_URL"] = f"postgresql+psycopg://u:p@localhost/d?{query}"
+
+    with pytest.raises(ValidationError) as caught:
+        Settings.load(environ)
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "REVIEW_SECRET" not in formatted
+    assert caught.value.errors(include_input=False, include_context=False, include_url=False) == [
+        {
+            "type": "value_error",
+            "loc": ("database_url",),
+            "msg": "Value error, Unsupported database URL query",
+        }
+    ]
+
+
+def test_database_url_allows_bounded_sslmode(environ: dict[str, str]) -> None:
+    environ["MAIMEMO_DATABASE_URL"] += "?sslmode=require"
+    assert Settings.load(environ).database_url.endswith("?sslmode=require")
+
+
 def test_read_maimemo_token_strips_trailing_newline(environ: dict[str, str]) -> None:
     Path(environ["MAIMEMO_TOKEN_FILE"]).write_text("synthetic-token\r\n", encoding="utf-8")
     token = Settings.load(environ).read_maimemo_token()

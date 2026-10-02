@@ -12,7 +12,11 @@ from typing import IO, Any
 
 from sqlalchemy.engine import URL
 
-from maimemo_mcp.database_url import DatabaseUrlError, parse_database_url
+from maimemo_mcp.database_url import (
+    DatabaseUrlError,
+    parse_database_url,
+    validate_database_url,
+)
 
 _CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -95,8 +99,7 @@ class PostgresTools:
         return command
 
     def database_argument(self, url: URL) -> tuple[str, dict[str, str]]:
-        if any(key.casefold() in {"password", "sslpassword", "passfile"} for key in url.query):
-            raise ValueError("Credential query parameters are not supported")
+        validate_database_url(url)
         environment = dict(os.environ)
         password = url.password
         if password is not None:

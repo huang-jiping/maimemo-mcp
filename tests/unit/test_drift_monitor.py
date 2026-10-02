@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from maimemo_mcp import openapi_drift as drift
 from maimemo_mcp.ingestion.drift_monitor import OpenApiDriftMonitor
@@ -115,6 +116,66 @@ async def test_cancellation_during_upstream_request_closes_stream_promptly(
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)
         assert closed.is_set()
+        assert not state.exists()
+
+
+async def test_path_budget_failure_keeps_collection_alive_and_shutdown_has_no_orphans(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    state = tmp_path / "state.json"
+    tasks_before = asyncio.all_tasks()
+    failed_check, collection_alive = asyncio.Event(), asyncio.Event()
+    parent = "SYNTHETIC_PRIVATE_PARENT_" + "x" * 4096
+    current = yaml.safe_dump({
+        "openapi": "3.0.0", "paths": {"/fanout": {"get": {
+            "operationId": "getFanout", "responses": {"200": {"content": {
+                "application/json": {"schema": {"properties": {
+                    parent: {"properties": {
+                        f"leaf{i}": {"type": "string"} for i in range(256)
+                    }},
+                }}},
+            }}},
+        }}},
+    }).encode("utf-8")
+    pulses = 0
+
+    async def sleep(seconds: float) -> None:
+        assert seconds == 21600
+        failed_check.set()
+        await asyncio.Event().wait()
+
+    async def collect() -> None:
+        nonlocal pulses
+        while True:
+            pulses += 1
+            if failed_check.is_set():
+                collection_alive.set()
+            await asyncio.sleep(0.001)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, content=current),
+    )) as client:
+        async with asyncio.TaskGroup() as tasks:
+            monitor = tasks.create_task(OpenApiDriftMonitor(
+                state, client=client, sleep=sleep,
+            ).run_forever())
+            collection = tasks.create_task(collect())
+            try:
+                await asyncio.wait_for(collection_alive.wait(), 3)
+                assert pulses > 1
+                assert not collection.done() and not monitor.done()
+                records = [r for r in caplog.records if r.name.endswith("drift_monitor")]
+                assert len(records) == 1
+                assert records[0].safe_fields["status"] == "failed"
+                assert records[0].safe_fields["error_class"] == "SpecReadError"
+                assert parent not in SafeJsonFormatter().format(records[0])
+                assert "SYNTHETIC" not in SafeJsonFormatter().format(records[0])
+                assert not state.exists()
+            finally:
+                monitor.cancel()
+                collection.cancel()
+        assert asyncio.all_tasks() == tasks_before
         assert not state.exists()
 
 

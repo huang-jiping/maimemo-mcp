@@ -7,6 +7,7 @@ from textwrap import dedent, indent
 from time import perf_counter
 
 import pytest
+import yaml
 
 from maimemo_mcp import openapi_drift as drift
 
@@ -426,3 +427,46 @@ def test_deep_or_recursive_yaml_is_rejected_before_schema_traversal(extension: s
     document = f"openapi: 3.0.0\npaths: {{}}\nx: {extension}\n".encode()
     with pytest.raises(drift.SpecReadError, match="^structure_limit$"):
         compare_openapi(BASE, document)
+
+
+@pytest.mark.parametrize(
+    ("parent_length", "leaves", "category"),
+    [
+        pytest.param(4096, 256, "path_limit", id="single_reduced"),
+        pytest.param(300000, 2000, "path_limit", id="original_size"),
+        pytest.param(950, 1200, "path_bytes_limit", id="aggregate"),
+        pytest.param(600, 1, "path_limit", id="utf8_single"),
+    ],
+)
+def test_real_pinned_long_parent_fanout_is_bounded_before_paths_are_saved(
+    parent_length: int, leaves: int, category: str,
+) -> None:
+    pinned = drift.DEFAULT_PINNED_FILE.read_bytes()
+    parent = "SYNTHETIC_PRIVATE_KEY_" + ("界" if leaves == 1 else "x") * parent_length
+    document: dict[str, object] = {"openapi": "3.0.0", "paths": {}}
+    document["paths"]["/fanout-budget-probe"] = {
+        "get": {
+            "operationId": "getFanoutBudgetProbe",
+            "responses": {"200": {"description": "ok", "content": {
+                "application/json": {"schema": {"properties": {
+                    parent: {"properties": {
+                        f"leaf{i}": {"type": "string"} for i in range(leaves)
+                    }},
+                }}},
+            }}},
+        },
+    }
+    current = yaml.safe_dump(document, allow_unicode=True).encode("utf-8")
+    assert len(current) < 2 * 1024 * 1024
+    with pytest.raises(drift.SpecReadError, match=f"^{category}$") as failure:
+        compare_openapi(pinned, current)
+    assert parent not in str(failure.value)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+
+
+def test_real_pinned_result_is_unchanged_under_path_budgets() -> None:
+    pinned = drift.DEFAULT_PINNED_FILE.read_bytes()
+    report = compare_openapi(pinned, pinned)
+    assert report.severity == "none"
+    assert report.changes == ()
+    assert report.pinned_sha256 == report.current_sha256 == hashlib.sha256(pinned).hexdigest()

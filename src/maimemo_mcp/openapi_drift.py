@@ -26,6 +26,10 @@ MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_STRUCTURE_ITEMS = 20000
 MAX_STRUCTURE_DEPTH = 64
 MAX_WORK_ITEMS = 50000
+# Count string expansion as well as nodes: a long parent repeated over many
+# leaves can otherwise exhaust the Worker's 512 MiB limit from a small document.
+MAX_SCHEMA_PATH_BYTES = 1024
+MAX_EXPANDED_PATH_BYTES = 1024 * 1024
 DEFAULT_PINNED_FILE = Path(__file__).resolve().parents[2] / "openapi" / "maimemo-api.yaml"
 DEFAULT_REMOTE_URL = "https://open.maimemo.com/api_bundle.yaml"
 
@@ -38,6 +42,7 @@ class SpecReadError(ValueError):
 class _WorkBudget:
     stop: Event | None = None
     remaining: int = MAX_WORK_ITEMS
+    remaining_path_bytes: int = MAX_EXPANDED_PATH_BYTES
 
     def consume(self, count: int = 1) -> None:
         if self.stop is not None and self.stop.is_set():
@@ -45,6 +50,12 @@ class _WorkBudget:
         self.remaining -= count
         if self.remaining < 0:
             raise SpecReadError("work_limit")
+
+    def reserve_path_bytes(self, count: int) -> None:
+        self.consume(0)
+        self.remaining_path_bytes -= count
+        if self.remaining_path_bytes < 0:
+            raise SpecReadError("path_bytes_limit")
 
 
 _WORK_BUDGET: ContextVar[_WorkBudget | None] = ContextVar("drift_work_budget", default=None)
@@ -54,6 +65,32 @@ def _consume(count: int = 1) -> None:
     budget = _WORK_BUDGET.get()
     if budget is not None:
         budget.consume(count)
+
+
+def _schema_path(prefix: str, name: str, *, separator: str = "") -> str:
+    # Reject by character count before encoding, then measure UTF-8 before
+    # allocating or retaining the combined path. Encoding touches at most 1024
+    # characters per piece, even when a malicious input has a huge scalar key.
+    parts = (prefix, separator, name)
+    if sum(len(part) for part in parts) > MAX_SCHEMA_PATH_BYTES:
+        raise SpecReadError("path_limit")
+    try:
+        size = sum(len(part.encode("utf-8")) for part in parts)
+    except UnicodeError:
+        raise SpecReadError("path_limit") from None
+    if size > MAX_SCHEMA_PATH_BYTES:
+        raise SpecReadError("path_limit")
+    budget = _WORK_BUDGET.get()
+    if budget is not None:
+        budget.reserve_path_bytes(size)
+    return f"{prefix}{separator}{name}"
+
+
+def _parameter_path(parameter: Mapping[str, Any]) -> str:
+    return _schema_path(
+        str(parameter.get("in", "unknown")), str(parameter.get("name", "unknown")),
+        separator=":",
+    )
 
 
 class _BoundedLoader(yaml.SafeLoader):
@@ -206,7 +243,7 @@ def _schema_fields(
     required: set[str] = set()
     optional: set[str] = set()
     for name, child in properties.items():
-        qualified = f"{prefix}.{name}" if prefix else name
+        qualified = _schema_path(prefix, name, separator="." if prefix else "")
         field_required = ancestor_required and name in required_names
         (required if field_required else optional).add(qualified)
         child_required, child_optional = _schema_fields(
@@ -224,7 +261,7 @@ def _schema_fields(
         child_required, child_optional = _schema_fields(
             root,
             items,
-            prefix=f"{prefix}[]" if prefix else "[]",
+            prefix=_schema_path(prefix, "[]"),
             ancestor_required=ancestor_required,
             seen=seen,
             depth=depth + 1,
@@ -343,13 +380,13 @@ def _operations(root: Mapping[str, Any]) -> dict[str, Operation]:
                     raise SpecReadError("Operation parameters must be a list")
                 parameters.extend(group)
             required_inputs = {
-                f"{parameter.get('in', 'unknown')}:{parameter.get('name', 'unknown')}"
+                _parameter_path(parameter)
                 for item in parameters
                 for parameter in [_resolve(root, item)]
                 if parameter.get("required") is True
             }
             optional_inputs = {
-                f"{parameter.get('in', 'unknown')}:{parameter.get('name', 'unknown')}"
+                _parameter_path(parameter)
                 for item in parameters
                 for parameter in [_resolve(root, item)]
                 if parameter.get("required") is not True

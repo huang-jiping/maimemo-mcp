@@ -34,6 +34,10 @@ class Settings(BaseModel):
     records_interval_minutes: int = Field(default=DEFAULT_RECORDS_INTERVAL_MINUTES, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     openapi_drift_state_file: Path = Path("var/openapi-drift.json")
+    database_connect_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    migration_lock_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    migration_statement_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    schema_wait_timeout_seconds: int = Field(default=60, ge=1, le=600)
 
     @property
     def today_interval(self) -> timedelta:
@@ -102,11 +106,17 @@ class Settings(BaseModel):
 
 
 def _read_secret(path: Path) -> SecretStr:
+    unreadable: type[OSError] | None = None
     try:
         value = path.read_text(encoding="utf-8").rstrip("\r\n")
     except UnicodeDecodeError:
         value = None
+    except OSError as exc:
+        unreadable = type(exc)
+        value = None
     # Raise outside the handler so __context__ cannot retain secret bytes.
+    if unreadable is not None:
+        raise unreadable("Secret file must be readable") from None
     if value is None:
         raise ValueError("Secret file must be valid UTF-8") from None
     if not value.strip():

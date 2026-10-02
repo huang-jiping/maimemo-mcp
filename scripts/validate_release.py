@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from http.client import HTTPException
 from pathlib import Path
 from typing import NoReturn, Protocol
 from urllib.error import HTTPError, URLError
@@ -120,7 +121,7 @@ class GhcrRegistry:
             token = json.loads(body)["token"]
             if not isinstance(token, str) or not token or "\n" in token or "\r" in token:
                 raise ValueError
-        except (OSError, URLError, ValueError, KeyError, TypeError):
+        except (OSError, URLError, HTTPException, ValueError, KeyError, TypeError):
             raise ReleaseError("registry authentication failed") from None
         self._authorization = f"Bearer {token}"
 
@@ -143,7 +144,7 @@ class GhcrRegistry:
             if error.code == 404:
                 return None
             raise ReleaseError("registry lookup failed") from None
-        except (OSError, URLError, ValueError):
+        except (OSError, URLError, HTTPException, ValueError):
             raise ReleaseError("registry lookup failed") from None
         if digest is None:
             raise ReleaseError("registry lookup failed")

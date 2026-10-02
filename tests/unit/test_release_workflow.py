@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import subprocess
+from http.client import BadStatusLine, IncompleteRead
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -316,6 +317,44 @@ def test_registry_network_failure_has_fixed_safe_message(release: Any, monkeypat
     monkeypatch.setattr(release, "urlopen", request)
     with pytest.raises(release.ReleaseError, match="^registry lookup failed$"):
         registry.digest("v0.1.0")
+
+
+@pytest.mark.parametrize("stage,exception_type,message", [
+    ("auth-open", BadStatusLine, "registry authentication failed"),
+    ("auth-read", IncompleteRead, "registry authentication failed"),
+    ("head", BadStatusLine, "registry lookup failed"),
+    ("head", IncompleteRead, "registry lookup failed"),
+], ids=["auth-status", "auth-incomplete-body", "head-status", "head-incomplete"])
+def test_cli_protocol_errors_are_redacted(release: Any, monkeypatch: pytest.MonkeyPatch,
+                                         capsys: Any, stage: str, exception_type: Any,
+                                         message: str) -> None:
+    remote_text = "remote-auth-secret https://registry.invalid/private-response"
+    failure = (exception_type(remote_text) if exception_type is BadStatusLine
+               else exception_type(remote_text.encode("utf-8"), 500))
+
+    class BrokenResponse(Response):
+        def read(self, size: int = -1) -> bytes:
+            raise failure
+
+    def request(request: Any, **kwargs: Any) -> Response:
+        if (stage == "auth-open" or stage == "head" and request.get_method() == "HEAD"):
+            raise failure
+        if stage == "auth-read":
+            return BrokenResponse(b"")
+        return Response(b'{"token":"safe"}')
+
+    monkeypatch.setattr(release, "urlopen", request)
+    monkeypatch.setattr(release, "require_master_ancestry", lambda commit: None)
+    monkeypatch.setenv("GITHUB_ACTOR", "test-actor")
+    monkeypatch.setenv("GITHUB_TOKEN", "synthetic-auth")
+    assert release.main(["publish", "--tag", "v0.1.0", "--commit", COMMIT,
+                         "--digest", DIGEST]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == message + "\n"
+    for private in (remote_text, "remote-auth-secret", "https://registry.invalid",
+                    "synthetic-auth", "Traceback", "BadStatusLine", "IncompleteRead"):
+        assert private not in captured.out + captured.err
 
 
 @pytest.mark.parametrize("body", [b"synthetic-auth", b'{"token":null}', b"{}",

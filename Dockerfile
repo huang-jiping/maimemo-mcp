@@ -2,6 +2,12 @@
 FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
 
 ARG UV_VERSION=0.12.21
+ARG SOURCE_REVISION=unknown
+ARG IMAGE_VERSION=dev
+
+LABEL org.opencontainers.image.source="https://github.com/huang-jiping/maimemo-mcp" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

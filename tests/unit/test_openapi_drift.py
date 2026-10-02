@@ -1,21 +1,14 @@
 """Semantic OpenAPI drift classification, independent of YAML presentation."""
 
-import importlib.util
-import sys
+import hashlib
+import json
 from pathlib import Path
 from textwrap import dedent, indent
-from typing import Any
 
 import pytest
 
-_MODULE_SPEC = importlib.util.spec_from_file_location(
-    "maimemo_openapi_drift",
-    Path(__file__).parents[2] / "scripts" / "check_openapi_drift.py",
-)
-assert _MODULE_SPEC is not None and _MODULE_SPEC.loader is not None
-drift: Any = importlib.util.module_from_spec(_MODULE_SPEC)
-sys.modules[_MODULE_SPEC.name] = drift
-_MODULE_SPEC.loader.exec_module(drift)
+from maimemo_mcp import openapi_drift as drift
+
 compare_openapi = drift.compare_openapi
 
 
@@ -333,7 +326,7 @@ def test_cli_atomically_persists_safe_latest_result(
         )
         == 0
     )
-    saved = drift.json.loads(state.read_text(encoding="utf-8"))
+    saved = json.loads(state.read_text(encoding="utf-8"))
     assert saved["severity"] == "none"
     assert saved["pinned_sha256"] == saved["current_sha256"]
     assert saved["checked_at"].endswith("Z")
@@ -342,3 +335,55 @@ def test_cli_atomically_persists_safe_latest_result(
         "drift-state.json",
         "pinned.yaml",
     ]
+
+
+def test_hashes_are_of_exact_document_bytes() -> None:
+    report = compare_openapi(BASE, BASE + b"\n")
+    assert report.pinned_sha256 == hashlib.sha256(BASE).hexdigest()
+    assert report.current_sha256 == hashlib.sha256(BASE + b"\n").hexdigest()
+    assert report.severity == "none"
+
+
+@pytest.mark.parametrize("side", ["pinned", "current"])
+def test_oversized_document_is_rejected_before_parsing(side: str) -> None:
+    oversized = b" " * (drift.MAX_DOCUMENT_BYTES + 1)
+    with pytest.raises(drift.SpecReadError, match="size_limit"):
+        compare_openapi(oversized if side == "pinned" else BASE,
+                        oversized if side == "current" else BASE)
+
+
+def test_failed_atomic_replace_keeps_previous_state_and_removes_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    state = tmp_path / "state.json"
+    state.write_text("previous", encoding="utf-8")
+
+    def denied(*args: object) -> None:
+        raise PermissionError("SYNTHETIC_PRIVATE_PATH")
+
+    monkeypatch.setattr(drift.os, "replace", denied)
+    with pytest.raises(PermissionError):
+        drift._write_state(state, compare_openapi(BASE, BASE), datetime.now(UTC))
+    assert state.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.iterdir()) == [state]
+
+
+def test_cli_failure_does_not_print_exception_text_or_custom_class_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    class SYNTHETIC_SECRET_EXCEPTION(Exception):
+        pass
+
+    pinned = tmp_path / "pinned.yaml"
+    pinned.write_bytes(BASE)
+
+    def failed(url: str) -> bytes:
+        raise SYNTHETIC_SECRET_EXCEPTION("https://u:SYNTHETIC_PASSWORD@example.test body")
+
+    monkeypatch.setattr(drift, "_download", failed)
+    assert drift.main(["--pinned", str(pinned), "--remote", "https://example.test"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "severity": "unreadable", "error_class": "UnexpectedError",
+    }

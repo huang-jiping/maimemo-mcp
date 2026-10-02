@@ -5,15 +5,14 @@ from pathlib import Path
 
 
 def test_consecutive_atomic_drift_publications_are_readable_by_nas_uid_gid() -> None:
-    scripts = Path(__file__).parents[2] / "scripts"
+    package = Path(__file__).parents[2] / "src" / "maimemo_mcp"
     probe = r'''
 import os
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-sys.path.insert(0, '/probe')
-from check_openapi_drift import _write_state, compare_openapi
+from maimemo_mcp.openapi_drift import _write_state, compare_openapi
 root = Path('/tmp/drift-permission-probe')
 root.mkdir(mode=0o755)
 pinned = Path('/app/openapi/maimemo-api.yaml').read_bytes()
@@ -38,7 +37,7 @@ print('UID1000 GID10 readable after 2 atomic replacements')
 '''
     result = subprocess.run([
         "docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/opt/venv/bin/python",
-        "--mount", f"type=bind,source={scripts.resolve()},target=/probe,readonly",
+        "--mount", f"type=bind,source={package.resolve()},target=/app/src/maimemo_mcp,readonly",
         "maimemo-mcp:test", "-c", probe,
     ], capture_output=True, text=True, encoding="utf-8", check=False)
     assert result.returncode == 0, result.stdout + result.stderr

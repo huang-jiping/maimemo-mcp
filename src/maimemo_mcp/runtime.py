@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from maimemo_mcp.config import Settings
 from maimemo_mcp.database_url import DatabaseUrlError, parse_database_url
+from maimemo_mcp.ingestion.drift_monitor import OpenApiDriftMonitor
 from maimemo_mcp.ingestion.scheduler import Schedule
 from maimemo_mcp.ingestion.service import StudyIngestionService
 from maimemo_mcp.ingestion.worker import Worker
@@ -80,7 +81,14 @@ async def _collect(settings: Settings) -> None:
             clock=lambda: datetime.now(UTC),
         )
         worker = Worker(service, Schedule(settings))
-        await worker.run_forever()
+        monitor = OpenApiDriftMonitor(settings.openapi_drift_state_file)
+        async with asyncio.TaskGroup() as tasks:
+            ingestion = tasks.create_task(worker.run_forever())
+            drift = tasks.create_task(monitor.run_forever())
+            try:
+                await ingestion
+            finally:
+                drift.cancel()
 
 
 async def _prepare_mcp(settings: Settings) -> None:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+import httpx
 import pytest
 import uvicorn
 
@@ -226,9 +227,11 @@ def test_worker_timeout_prevents_collection(
     migrate = Mock(side_effect=AssertionError("worker must not migrate"))
     monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
     monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    monitor = Mock(side_effect=AssertionError("schema gate ran too late"))
+    monkeypatch.setattr(runtime, "OpenApiDriftMonitor", monitor, raising=False)
     monkeypatch.setattr(runtime, "run_upgrade", migrate, raising=False)
     assert runtime.main(["worker"]) != 0
-    assert not collect.called and not migrate.called
+    assert not collect.called and not migrate.called and not monitor.called
     assert "schema_wait_timeout" in capsys.readouterr().err
 
 
@@ -244,13 +247,91 @@ def test_worker_waits_for_current_schema_then_collects(
             raise SchemaNotReadyError()
 
     async def collect(worker: object) -> None:
-        assert events == ["schema", "schema"]
+        assert events[:2] == ["schema", "schema"]
         events.append("collect")
+
+    async def monitor(self: object) -> None:
+        assert events[:2] == ["schema", "schema"]
+        await asyncio.Event().wait()
 
     monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
     monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    monkeypatch.setattr(runtime.OpenApiDriftMonitor, "run_forever", monitor)
     assert runtime.main(["worker"]) == 0
     assert events == ["schema", "schema", "collect"]
+
+
+async def test_worker_collects_despite_monitor_failure_and_cancels_monitor_on_shutdown(
+    startup_settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maimemo_mcp.ingestion.drift_monitor import OpenApiDriftMonitor
+
+    checked, cleaned, collected = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    pinned = tmp_path / "pinned.yaml"
+    pinned.write_bytes(b"openapi: 3.0.0\npaths: {}\n")
+    events: list[str] = []
+
+    async def require(engine: object, expected: str) -> None:
+        events.append("schema")
+
+    async def sleep(seconds: float) -> None:
+        assert seconds == 21600
+        checked.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        assert events == ["schema"]
+        raise httpx.ConnectError("SYNTHETIC_UPSTREAM_SECRET", request=request)
+
+    async def collect(worker: object) -> None:
+        assert events == ["schema"]
+        await checked.wait()
+        collected.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "require_current_schema", require)
+    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        monkeypatch.setattr(runtime, "OpenApiDriftMonitor", lambda state: OpenApiDriftMonitor(
+            state, pinned_file=pinned, client=client, sleep=sleep,
+        ))
+        task = asyncio.create_task(runtime._run_worker(startup_settings))
+        try:
+            await asyncio.wait_for(collected.wait(), 1)
+            assert not task.done()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        assert cleaned.is_set()
+
+
+async def test_worker_normal_completion_also_stops_monitor(
+    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    async def require(engine: object, expected: str) -> None:
+        pass
+
+    async def monitor(self: object) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def collect(worker: object) -> None:
+        await started.wait()
+
+    monkeypatch.setattr(runtime, "require_current_schema", require)
+    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
+    monkeypatch.setattr(runtime.OpenApiDriftMonitor, "run_forever", monitor)
+    await asyncio.wait_for(runtime._run_worker(startup_settings), 1)
+    assert stopped.is_set()
 
 
 def test_worker_schema_probe_is_cancelled_at_wait_deadline(

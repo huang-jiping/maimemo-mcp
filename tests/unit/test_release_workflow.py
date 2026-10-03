@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import subprocess
+import tomllib
 from http.client import BadStatusLine, IncompleteRead
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,11 @@ def test_ci_runs_locked_python_quality_gates_with_real_postgres() -> None:
     assert "-t maimemo-mcp:test" in commands[build]
     assert job["steps"][-1]["if"] == "always()"
     assert job["steps"][-1]["run"] == "docker compose -f compose.test.yaml down --volumes"
+
+
+def test_pytest_adds_repository_root_for_cross_test_imports() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["tool"]["pytest"]["ini_options"]["pythonpath"] == ["."]
 
 
 @pytest.mark.parametrize("name", ["ci.yml", "publish-image.yml"])

@@ -400,6 +400,7 @@ name = "maimemo-worker"
 version = "0.2.0"
 source = { editable = "packages/maimemo-worker" }
 dependencies = [
+    { name = "httpx" },
     { name = "maimemo" },
     { name = "pydantic" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -407,6 +408,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "maimemo", editable = "packages/maimemo" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },

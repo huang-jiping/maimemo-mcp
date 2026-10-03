@@ -44,6 +44,10 @@ def direct_workspace_dependencies(package_name: str) -> set[str]:
         str(metadata["project"]["name"])
         for metadata in workspace_member_metadata().values()
     }
+    return declared_dependencies(package_name) & workspace_names
+
+
+def declared_dependencies(package_name: str) -> set[str]:
     metadata = next(
         metadata
         for metadata in workspace_member_metadata().values()
@@ -52,8 +56,6 @@ def direct_workspace_dependencies(package_name: str) -> set[str]:
     return {
         dependency.split(">", 1)[0].split("=", 1)[0].split("<", 1)[0]
         for dependency in metadata["project"]["dependencies"]
-        if dependency.split(">", 1)[0].split("=", 1)[0].split("<", 1)[0]
-        in workspace_names
     }
 
 
@@ -95,6 +97,10 @@ def test_runtime_packages_depend_only_on_core() -> None:
     assert direct_workspace_dependencies("maimemo-mcp") == {"maimemo"}
     assert direct_workspace_dependencies("maimemo-server") == {"maimemo"}
     assert direct_workspace_dependencies("maimemo-worker") == {"maimemo"}
+
+
+def test_worker_declares_its_direct_http_client_dependency() -> None:
+    assert "httpx" in declared_dependencies("maimemo-worker")
 
 
 def test_root_project_is_a_non_buildable_virtual_workspace() -> None:

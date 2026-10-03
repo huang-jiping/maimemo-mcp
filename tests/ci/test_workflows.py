@@ -46,9 +46,15 @@ def test_ci_runs_complete_validation_without_package_write_permission() -> None:
     assert event["push"]["branches"] == ["master"]
     assert workflow["permissions"] == {"contents": "read"}
     assert "packages" not in workflow["permissions"]
-    assert workflow["jobs"]["test"]["services"]["postgres"]["image"] == "postgres:15-alpine"
-    assert workflow["jobs"]["test"]["env"]["MAIMEMO_TEST_POSTGRES_CONTAINER"] == (
-        "${{ job.services.postgres.id }}"
+    job = workflow["jobs"]["test"]
+    assert job["services"]["postgres"]["image"] == "postgres:15-alpine"
+    assert "MAIMEMO_TEST_POSTGRES_CONTAINER" not in job["env"]
+    export_container = next(
+        step for step in job["steps"] if step["name"] == "Export Postgres container ID"
+    )
+    assert export_container["run"] == (
+        'echo "MAIMEMO_TEST_POSTGRES_CONTAINER=${{ job.services.postgres.id }}" '
+        '>> "$GITHUB_ENV"'
     )
     assert "uv lock --check" in commands
     assert "ruff check" in commands

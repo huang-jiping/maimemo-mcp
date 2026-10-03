@@ -16,15 +16,15 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from pydantic import Field
 
-from maimemo_mcp.mcp_server.dependencies import Dependencies
-from maimemo_mcp.mcp_server.envelopes import ToolEnvelope
-from maimemo_mcp.mcp_server.tools.common import READ_ONLY, Clock, live_result
+from maimemo_mcp.dependencies import MCPDependencies
+from maimemo_mcp.envelopes import ToolEnvelope
+from maimemo_mcp.tools.common import READ_ONLY, Clock, live_result
 
-ToolContext = Context[Dependencies, Any]
+ToolContext = Context[MCPDependencies, Any]
 type VocabularyID = Annotated[str, Field(description="Maimemo vocabulary ID, not word spelling.")]
 
 
-def register(server: MCPServer[Dependencies], clock: Clock) -> None:
+def register(server: MCPServer[MCPDependencies], clock: Clock) -> None:
     @server.tool(annotations=READ_ONLY)
     async def get_interpretations(
         voc_id: VocabularyID,

@@ -14,10 +14,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from maimemo_mcp.config import MCPSettings
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
 
 READ_ONLY_OPERATIONS = {
     "list_markji_folders",
@@ -171,7 +170,7 @@ def _record_count(content: object) -> int:
 async def run(arguments: Arguments) -> int:
     if set(_ARGUMENTS) != READ_ONLY_OPERATIONS:
         raise RuntimeError("Internal smoke table differs from the fixed read-only allowlist")
-    settings = Settings.load()
+    settings = MCPSettings.load()
     failures = 0
     prerequisites = 0
     server = create_mcp_app(settings)

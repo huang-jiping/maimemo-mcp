@@ -10,10 +10,9 @@ from typing import Any
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
 
 CORPUS = Path(__file__).with_name("prompts.yaml")
 COMPOSITES = {
@@ -62,10 +61,14 @@ def evaluation_settings(tmp_path: Path) -> Settings:
     key = tmp_path / "fingerprint-key"
     token.write_text("evaluation-fake-token", encoding="utf-8")
     key.write_text("evaluation-fake-key", encoding="utf-8")
-    return Settings(
-        database_url="postgresql+psycopg://evaluation:evaluation@127.0.0.1:1/evaluation",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": (
+                "postgresql+psycopg://evaluation:evaluation@127.0.0.1:1/evaluation"
+            ),
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
 
 

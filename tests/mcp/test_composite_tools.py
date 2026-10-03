@@ -14,12 +14,11 @@ from maimemo.ingestion.normalizers import (
 )
 from maimemo.storage.models.ingestion import IngestionRun
 from maimemo.storage.repositories import StudyHistoryRepository
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
 
 AT = datetime(2030, 10, 2, 12, tzinfo=UTC)
 TABLES = (
@@ -520,10 +519,7 @@ async def test_worker_persists_scores_visible_through_real_mcp(
     from tests.integration.test_worker_locking import Upstream
 
     factory = async_sessionmaker(workflow_database, expire_on_commit=False)
-    intervals = AnalysisIntervals(
-        today_interval_minutes=workflow_settings.today_interval_minutes,
-        records_interval_minutes=workflow_settings.records_interval_minutes,
-    )
+    intervals = AnalysisIntervals()
     collector = Worker(
         StudyIngestionService(factory, Upstream()), Schedule(intervals), clock=lambda: AT
     )
@@ -537,22 +533,19 @@ async def test_worker_persists_scores_visible_through_real_mcp(
         assert words[0]["evidence_through"] == AT.isoformat().replace("+00:00", "Z")
 
 
-@pytest.mark.parametrize("interval,age,want", [(120, 31, "complete"), (5, 10, "stale")])
-async def test_settings_intervals_reach_mcp_health_and_analysis(
+@pytest.mark.parametrize("age,want", [(10, "complete"), (241, "stale")])
+async def test_default_intervals_reach_mcp_health_and_analysis(
     workflow_settings: Settings, workflow_database: AsyncEngine,
-    interval: int, age: int, want: str,
+    age: int, want: str,
 ) -> None:
     await seed(workflow_database, at=AT - timedelta(minutes=age))
-    settings = workflow_settings.model_copy(update={
-        "today_interval_minutes": interval, "records_interval_minutes": interval,
-    })
-    async with Client(create_mcp_app(settings, clock=lambda: AT).sdk) as client:
+    async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
         health = await client.call_tool("get_learning_data_health", {})
         assert health.structured_content is not None
         assert health.structured_content["meta"]["completeness"] == want
         # Use the production dependency factory, not an independently configured scorer.
-    from maimemo_mcp.mcp_server.dependencies import open_dependencies
-    async with open_dependencies(settings) as deps:
+    from maimemo_mcp.dependencies import open_mcp_dependencies
+    async with open_mcp_dependencies(workflow_settings) as deps:
         await deps.weakness.recalculate(AT)
         words = await deps.weakness.list_weak_words(WeakWordQuery(as_of=AT))
         assert ("DATA_QUALITY_STALE" in words[0].reason_codes) == (want == "stale")
@@ -580,10 +573,9 @@ async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
 
     from maimemo.config import AnalysisIntervals
     from maimemo.ingestion.service import StudyIngestionService
+    from maimemo_mcp.dependencies import open_mcp_dependencies
     from maimemo_worker.scheduler import Schedule, ScheduledJob
     from maimemo_worker.worker import Worker
-
-    from maimemo_mcp.mcp_server.dependencies import open_dependencies
 
     private = "SYNTHETIC_SCHEMA_ARCHIVE_PRIVATE"
     caplog.set_level(logging.INFO)
@@ -593,11 +585,8 @@ async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
             "progress": {"finished": 1, "private": private}
         })), **kw
     ))
-    async with open_dependencies(workflow_settings) as deps:
-        intervals = AnalysisIntervals(
-            today_interval_minutes=workflow_settings.today_interval_minutes,
-            records_interval_minutes=workflow_settings.records_interval_minutes,
-        )
+    async with open_mcp_dependencies(workflow_settings) as deps:
+        intervals = AnalysisIntervals()
         collector = Worker(
             StudyIngestionService(deps.sessions, deps.study, weakness=deps.weakness),
             Schedule(intervals),

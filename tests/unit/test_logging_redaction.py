@@ -17,12 +17,11 @@ from maimemo.api_client.errors import UpstreamSchemaError, UpstreamUnavailableEr
 from maimemo.api_client.transport import MaimemoTransport
 from maimemo.ingestion.service import IngestionResult
 from maimemo.logging import SafeJsonFormatter, configure_logging, log_event
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.health import health_routes, operational_health
 from maimemo_worker.worker import Worker
 from pydantic import BaseModel, SecretStr
 from starlette.applications import Starlette
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.health import health_routes, operational_health
 
 SECRET = "token-value-ABC123"
 
@@ -65,10 +64,12 @@ def settings(tmp_path: Path) -> Settings:
     key = tmp_path / "key"
     token.write_text(SECRET, encoding="utf-8")
     key.write_text("fingerprint-key-secret", encoding="utf-8")
-    return Settings(
-        database_url="postgresql+psycopg://user:password@localhost/db",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": "postgresql+psycopg://user:password@localhost/db",
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
 
 
@@ -126,7 +127,7 @@ def test_configure_logging_does_not_render_secret_paths_or_values(tmp_path: Path
     original_handlers = root.handlers[:]
     original_level = root.level
     try:
-        configure_logging(app_settings.log_level)
+        configure_logging(app_settings.core.log_level)
         assert root.level == logging.INFO
         assert len(root.handlers) == 1
         assert isinstance(root.handlers[0].formatter, SafeJsonFormatter)
@@ -192,7 +193,7 @@ class FakeSessions:
 
 async def test_operational_health_has_safe_required_fields(monkeypatch: Any) -> None:
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash",
+        "maimemo_mcp.health.pinned_schema_hash",
         lambda: "a" * 64,
     )
     dependencies = SimpleNamespace(sessions=FakeSessions())
@@ -236,7 +237,7 @@ async def test_operational_health_reads_fresh_persisted_drift_status(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions()),
@@ -265,7 +266,7 @@ async def test_operational_health_marks_old_or_mismatched_drift_state_stale(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions()),
@@ -285,7 +286,7 @@ async def test_malformed_drift_state_is_bounded_and_cannot_leak(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions()),

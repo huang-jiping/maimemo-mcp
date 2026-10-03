@@ -1,4 +1,4 @@
-"""One lifespan owns engines and transports; API/services share those dependencies."""
+"""One MCP lifespan owns all database and upstream resources."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -13,15 +13,15 @@ from maimemo.api_client.memo_content import MemoContentClient
 from maimemo.api_client.rate_limit import SharedRateLimiter
 from maimemo.api_client.study import StudyClient
 from maimemo.api_client.transport import MaimemoTransport
+from maimemo.application import open_database, open_upstream
 from maimemo.feedback.service import FeedbackService
-from maimemo.storage.database import create_async_engine, create_session_factory
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from maimemo_mcp.config import Settings
+from maimemo_mcp.config import MCPSettings
 
 
 @dataclass(frozen=True, repr=False)
-class Dependencies:
+class MCPDependencies:
     engine: AsyncEngine
     sessions: async_sessionmaker[AsyncSession]
     http_client: httpx.AsyncClient
@@ -35,46 +35,30 @@ class Dependencies:
 
 
 @asynccontextmanager
-async def open_dependencies(settings: Settings) -> AsyncIterator[Dependencies]:
+async def open_mcp_dependencies(settings: MCPSettings) -> AsyncIterator[MCPDependencies]:
     stack = AsyncExitStack()
     try:
-        engine = create_async_engine(settings.database_url)
-        stack.push_async_callback(engine.dispose)
-        sessions = create_session_factory(engine)
-        http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
-        stack.push_async_callback(http_client.aclose)
-        limiter = SharedRateLimiter(sessions)
-        transport = MaimemoTransport(
-            settings.read_maimemo_token(),
-            settings.read_token_fingerprint_key(),
-            limiter,
-            client=http_client,
+        database = await stack.enter_async_context(open_database(settings.core.database))
+        upstream = await stack.enter_async_context(
+            open_upstream(settings.upstream, database.sessions)
         )
-        # The HTTP client is externally owned by this stack; transport won't close it twice.
-        stack.push_async_callback(transport.aclose)
-        yield Dependencies(
-            engine=engine,
-            sessions=sessions,
-            http_client=http_client,
-            limiter=limiter,
-            transport=transport,
-            markji=MarkjiClient(transport),
-            memo_content=MemoContentClient(transport),
-            study=StudyClient(transport),
-            feedback=FeedbackService(sessions),
-            weakness=WeaknessService(
-                sessions,
-                today_interval=settings.today_interval,
-                records_interval=settings.records_interval,
-            ),
+        yield MCPDependencies(
+            engine=database.engine,
+            sessions=database.sessions,
+            http_client=upstream.http_client,
+            limiter=upstream.limiter,
+            transport=upstream.transport,
+            markji=upstream.markji,
+            memo_content=upstream.memo_content,
+            study=upstream.study,
+            feedback=FeedbackService(database.sessions),
+            weakness=WeaknessService(database.sessions),
         )
     finally:
         await _close_stack(stack)
 
 
 async def _close_stack(stack: AsyncExitStack) -> None:
-    # AnyIO shields its own scope cancellation, while asyncio shields native Task.cancel().
-    # Keep the cleanup task alive and awaited even if shutdown receives repeated cancellations.
     with anyio.CancelScope(shield=True):
         cleanup = asyncio.create_task(stack.aclose())
         cancellation: asyncio.CancelledError | None = None
@@ -86,7 +70,6 @@ async def _close_stack(stack: AsyncExitStack) -> None:
                     raise
                 cancellation = exc
             except BaseException as exc:
-                # Cleanup failure takes precedence, retaining any interrupted shutdown as cause.
                 if cancellation is not None:
                     raise exc from cancellation
                 raise

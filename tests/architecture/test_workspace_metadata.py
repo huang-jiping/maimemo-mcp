@@ -1,4 +1,4 @@
-"""Contracts for the transitional uv workspace metadata."""
+"""Contracts for the final virtual uv workspace metadata."""
 
 from __future__ import annotations
 
@@ -39,9 +39,28 @@ def workspace_member_versions() -> set[str]:
     }
 
 
+def direct_workspace_dependencies(package_name: str) -> set[str]:
+    workspace_names = {
+        str(metadata["project"]["name"])
+        for metadata in workspace_member_metadata().values()
+    }
+    metadata = next(
+        metadata
+        for metadata in workspace_member_metadata().values()
+        if metadata["project"]["name"] == package_name
+    )
+    return {
+        dependency.split(">", 1)[0].split("=", 1)[0].split("<", 1)[0]
+        for dependency in metadata["project"]["dependencies"]
+        if dependency.split(">", 1)[0].split("=", 1)[0].split("<", 1)[0]
+        in workspace_names
+    }
+
+
 def test_workspace_declares_expected_members() -> None:
     assert workspace_members() == {
         "packages/maimemo",
+        "packages/maimemo-mcp",
         "packages/maimemo-server",
         "packages/maimemo-worker",
     }
@@ -54,6 +73,7 @@ def test_initial_package_versions_are_aligned() -> None:
 def test_workspace_members_use_hatchling_src_layout() -> None:
     expected_import_packages = {
         "packages/maimemo": "src/maimemo",
+        "packages/maimemo-mcp": "src/maimemo_mcp",
         "packages/maimemo-server": "src/maimemo_server",
         "packages/maimemo-worker": "src/maimemo_worker",
     }
@@ -71,8 +91,16 @@ def test_workspace_members_use_hatchling_src_layout() -> None:
         ]
 
 
-def test_runtime_placeholders_depend_on_core_workspace_package() -> None:
-    metadata = workspace_member_metadata()
+def test_runtime_packages_depend_only_on_core() -> None:
+    assert direct_workspace_dependencies("maimemo-mcp") == {"maimemo"}
+    assert direct_workspace_dependencies("maimemo-server") == {"maimemo"}
+    assert direct_workspace_dependencies("maimemo-worker") == {"maimemo"}
 
-    for member in ("packages/maimemo-server", "packages/maimemo-worker"):
-        assert "maimemo>=0.2.0,<0.3" in metadata[member]["project"]["dependencies"]
+
+def test_root_project_is_a_non_buildable_virtual_workspace() -> None:
+    metadata = load_toml(ROOT / "pyproject.toml")
+
+    assert metadata["project"]["name"] == "maimemo-workspace"
+    assert metadata["project"]["version"] == "0.2.0"
+    assert metadata["tool"]["uv"]["package"] is False
+    assert "build-system" not in metadata

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from maimemo.api_client.models import ParsingWarning, ResponseModel
 from mcp_types import ToolAnnotations
 
-from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
+from maimemo_mcp.envelopes import Completeness, ToolEnvelope, ToolMeta
 
 type Clock = Callable[[], datetime]
 

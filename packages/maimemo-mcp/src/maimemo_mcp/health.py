@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from maimemo_mcp.mcp_server.dependencies import Dependencies
+from maimemo_mcp.dependencies import MCPDependencies
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DRIFT_STATE_FIELDS = {"severity", "checked_at", "pinned_sha256", "current_sha256"}
@@ -89,7 +89,7 @@ def _drift_health(
 
 
 async def operational_health(
-    current: Dependencies,
+    current: MCPDependencies,
     *,
     drift_state_file: Path | None = None,
     now: datetime | None = None,
@@ -143,7 +143,7 @@ async def operational_health(
 
 
 def health_routes(
-    dependencies: Callable[[], Dependencies | None],
+    dependencies: Callable[[], MCPDependencies | None],
     *,
     drift_state_file: Path | None = None,
 ) -> list[Route]:

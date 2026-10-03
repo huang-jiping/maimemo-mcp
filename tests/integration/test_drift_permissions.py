@@ -22,7 +22,7 @@ reader = """
 import os
 from pathlib import Path
 from datetime import UTC, datetime
-from maimemo_mcp.mcp_server.health import _drift_health, pinned_schema_hash
+from maimemo_mcp.health import _drift_health, pinned_schema_hash
 assert os.getuid() == 10001
 health = _drift_health(Path('/tmp/drift-permission-probe/state.json'),
     current_schema_hash=pinned_schema_hash(), now=datetime.now(UTC))

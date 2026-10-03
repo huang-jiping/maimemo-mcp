@@ -1,14 +1,13 @@
-"""Container entrypoint mode selection is explicit and closed."""
+"""Independent runtime entrypoints reject legacy modes and redact configuration."""
 
 import pytest
 
-from maimemo_mcp.runtime import parse_mode
-
 
 def test_mcp_runtime_rejects_worker_mode() -> None:
-    assert parse_mode(["mcp"]) == "mcp"
+    from maimemo_mcp.runtime import main
+
     with pytest.raises(SystemExit):
-        parse_mode(["worker"])
+        main(["worker"])
 
 
 @pytest.mark.parametrize("invalid", [False, True])
@@ -28,7 +27,7 @@ def test_startup_configuration_failure_is_controlled_and_secret_free(
         monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
         monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
         monkeypatch.setenv("MAIMEMO_MCP_PORT", url)
-    assert main(["mcp"]) == 2
+    assert main([]) == 2
     output = capsys.readouterr()
     assert "SYNTHETIC_STARTUP_SECRET" not in output.err + output.out
     assert "postgresql://" not in output.err + output.out
@@ -56,7 +55,7 @@ def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback
     monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
     monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
 
-    assert main(["mcp"]) == 2
+    assert main([]) == 2
 
     output = capsys.readouterr()
     combined = output.err + output.out
@@ -70,21 +69,23 @@ def test_runtime_preflight_controls_late_engine_url_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from pathlib import Path
-
-    from maimemo_mcp.config import Settings
+    from maimemo.config import CoreSettings, DatabaseSettings, UpstreamCredentialSettings
+    from maimemo_mcp.config import MCPSettings
     from maimemo_mcp.runtime import main
 
-    settings = Settings.model_construct(
-        database_url=(
-            "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d"
+    settings = MCPSettings.model_construct(
+        core=CoreSettings.model_construct(
+            database=DatabaseSettings.model_construct(
+                database_url=(
+                    "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d"
+                )
+            )
         ),
-        token_file=Path("unused"),
-        token_fingerprint_key_file=Path("unused"),
+        upstream=UpstreamCredentialSettings.model_construct(),
     )
-    monkeypatch.setattr(Settings, "load", lambda: settings)
+    monkeypatch.setattr(MCPSettings, "load", lambda: settings)
 
-    assert main(["mcp"]) == 2
+    assert main([]) == 2
 
     output = capsys.readouterr()
     combined = output.err + output.out

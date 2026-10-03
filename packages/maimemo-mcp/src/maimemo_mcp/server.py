@@ -9,11 +9,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.types import Receive, Scope, Send
 
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.dependencies import Dependencies, open_dependencies
-from maimemo_mcp.mcp_server.health import health_routes
-from maimemo_mcp.mcp_server.tools import composite, feedback, markji, memo_content, study
-from maimemo_mcp.mcp_server.tools.common import Clock, utc_now
+from maimemo_mcp.config import MCPSettings
+from maimemo_mcp.dependencies import MCPDependencies, open_mcp_dependencies
+from maimemo_mcp.health import health_routes
+from maimemo_mcp.tools import composite, feedback, markji, memo_content, study
+from maimemo_mcp.tools.common import Clock, utc_now
 
 SERVER_INSTRUCTIONS = (
     "The 17 Maimemo tools are read-only upstream operations. "
@@ -31,31 +31,33 @@ class MCPServer:
     ``Client(server.sdk)`` exercises the same lifespan over in-process transport.
     """
 
-    sdk: SDKMCPServer[Dependencies]
+    sdk: SDKMCPServer[MCPDependencies]
     asgi_app: Starlette
-    dependencies: Dependencies | None = field(default=None, init=False)
+    dependencies: MCPDependencies | None = field(default=None, init=False)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         await self.asgi_app(scope, receive, send)
 
 
-def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
+def create_mcp_app(settings: MCPSettings, *, clock: Clock = utc_now) -> MCPServer:
     @asynccontextmanager
-    async def lifespan(sdk: SDKMCPServer[Dependencies]) -> AsyncIterator[Dependencies]:
+    async def lifespan(
+        sdk: SDKMCPServer[MCPDependencies],
+    ) -> AsyncIterator[MCPDependencies]:
         if server.dependencies is not None:
             raise RuntimeError("MCP application lifespan is already active")
-        async with open_dependencies(settings) as dependencies:
+        async with open_mcp_dependencies(settings) as dependencies:
             server.dependencies = dependencies
             try:
                 yield dependencies
             finally:
                 server.dependencies = None
 
-    sdk = SDKMCPServer[Dependencies](
+    sdk = SDKMCPServer[MCPDependencies](
         name="maimemo-mcp",
-        version="0.1.0",
+        version="0.2.0",
         instructions=SERVER_INSTRUCTIONS,
-        log_level=settings.log_level,
+        log_level=settings.core.log_level,
         lifespan=lifespan,
     )
     markji.register(sdk, clock)
@@ -64,9 +66,9 @@ def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
     composite.register(sdk, clock)
     feedback.register(sdk, clock)
     hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "[::1]", "[::1]:*"]
-    if settings.mcp_host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
-        hosts.extend([settings.mcp_host, f"{settings.mcp_host}:*"])
-    for host in settings.mcp_allowed_hosts:
+    if settings.host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
+        hosts.extend([settings.host, f"{settings.host}:*"])
+    for host in settings.allowed_hosts:
         hosts.extend([host, f"{host}:*"])
     asgi_app = sdk.streamable_http_app(
         streamable_http_path="/mcp",
@@ -80,7 +82,7 @@ def create_mcp_app(settings: Settings, *, clock: Clock = utc_now) -> MCPServer:
     asgi_app.routes.extend(
         health_routes(
             lambda: server.dependencies,
-            drift_state_file=settings.openapi_drift_state_file,
+            drift_state_file=settings.drift_state_file,
         )
     )
     return server

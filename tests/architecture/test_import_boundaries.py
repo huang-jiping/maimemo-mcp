@@ -58,3 +58,29 @@ def test_worker_uses_core_advisory_key() -> None:
     assert advisory_key_import("maimemo-worker", "maimemo_worker.scheduler") == (
         "maimemo.ingestion.locks"
     )
+
+
+def test_mcp_never_imports_other_runtime_packages() -> None:
+    assert forbidden_imports(
+        "packages/maimemo-mcp/src", {"maimemo_server", "maimemo_worker"}
+    ) == []
+
+
+def test_mcp_contains_only_protocol_adapter_modules() -> None:
+    package = ROOT / "packages" / "maimemo-mcp" / "src" / "maimemo_mcp"
+    source_entries = {
+        path.name
+        for path in package.iterdir()
+        if path.name != "__pycache__" and (path.is_file() or any(path.rglob("*.py")))
+    }
+    assert source_entries <= {
+        "__init__.py",
+        "config.py",
+        "dependencies.py",
+        "envelopes.py",
+        "health.py",
+        "py.typed",
+        "runtime.py",
+        "server.py",
+        "tools",
+    }

@@ -20,12 +20,11 @@ from alembic.config import Config
 from maimemo.api_client.markji import MarkjiClient
 from maimemo.api_client.memo_content import MemoContentClient
 from maimemo.api_client.study import StudyClient
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.server import MCPServer, create_mcp_app
 from mcp.client import Client
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import MCPServer, create_mcp_app
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -227,11 +226,21 @@ def settings(tmp_path: Path) -> Settings:
     token, key = tmp_path / "token", tmp_path / "key"
     token.write_text("test-token-only", encoding="utf-8")
     key.write_text("test-key-only", encoding="utf-8")
-    return Settings(
-        database_url="postgresql+psycopg://test_only:test_only@127.0.0.1:1/atomic_test",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": (
+                "postgresql+psycopg://test_only:test_only@127.0.0.1:1/atomic_test"
+            ),
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
+
+
+def with_database(settings: Settings, database_url: str) -> Settings:
+    database = settings.core.database.model_copy(update={"database_url": database_url})
+    core = settings.core.model_copy(update={"database": database})
+    return settings.model_copy(update={"core": core})
 
 
 async def test_exact_inventory_safety_and_explicit_schemas(settings: Settings) -> None:
@@ -335,7 +344,7 @@ async def test_empty_live_study_never_claims_initialized_or_complete_history(
         )
 
     monkeypatch.setattr(httpx, "AsyncClient", make_client)
-    server = create_mcp_app(settings.model_copy(update={"database_url": postgres_url}))
+    server = create_mcp_app(with_database(settings, postgres_url))
     before_time = datetime.now(UTC)
     async with Client(server.sdk) as client:
         before = await row_counts(server)
@@ -371,7 +380,7 @@ async def test_upstream_failures_use_sdk_errors_without_secret_or_local_writes(
         )
 
     monkeypatch.setattr(httpx, "AsyncClient", make_client)
-    server = create_mcp_app(settings.model_copy(update={"database_url": postgres_url}))
+    server = create_mcp_app(with_database(settings, postgres_url))
     async with Client(server.sdk) as client:
         before = await row_counts(server)
         result = await client.call_tool("get_notes", {"voc_id": "word-id"})
@@ -462,7 +471,7 @@ async def test_atomic_mapping_live_envelope_and_zero_local_rows(
         return real_client(transport=httpx.MockTransport(respond), **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", make_client)
-    settings = settings.model_copy(update={"database_url": postgres_url})
+    settings = with_database(settings, postgres_url)
     if name in ("get_today_items", "query_study_records"):
         payload = copy.deepcopy(payload)
         if name == "get_today_items":

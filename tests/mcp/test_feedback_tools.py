@@ -3,12 +3,11 @@
 from typing import Any
 
 import pytest
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
 
 
 def record(**updates: Any) -> dict[str, Any]:

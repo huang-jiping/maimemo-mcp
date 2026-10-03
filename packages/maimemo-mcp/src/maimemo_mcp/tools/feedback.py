@@ -17,11 +17,11 @@ from mcp.server.mcpserver import Context
 from mcp_types import ToolAnnotations
 from pydantic import Field, StrictBool
 
-from maimemo_mcp.mcp_server.dependencies import Dependencies
-from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
-from maimemo_mcp.mcp_server.tools.common import Clock
+from maimemo_mcp.dependencies import MCPDependencies
+from maimemo_mcp.envelopes import Completeness, ToolEnvelope, ToolMeta
+from maimemo_mcp.tools.common import Clock
 
-ToolContext = Context[Dependencies, Any]
+ToolContext = Context[MCPDependencies, Any]
 APPEND_ONLY = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
@@ -59,7 +59,7 @@ def feedback_result(event: FeedbackEventView) -> ToolEnvelope[FeedbackEventView]
     )
 
 
-def register(server: MCPServer[Dependencies], clock: Clock) -> None:
+def register(server: MCPServer[MCPDependencies], clock: Clock) -> None:
     @server.tool(annotations=APPEND_ONLY)
     async def record_confusion_feedback(
         request: RecordConfusionRequest,

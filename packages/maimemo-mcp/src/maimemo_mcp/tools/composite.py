@@ -20,11 +20,11 @@ from mcp.server.mcpserver import Context
 from mcp_types import ToolAnnotations
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from maimemo_mcp.mcp_server.dependencies import Dependencies
-from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
-from maimemo_mcp.mcp_server.tools.common import Clock
+from maimemo_mcp.dependencies import MCPDependencies
+from maimemo_mcp.envelopes import Completeness, ToolEnvelope, ToolMeta
+from maimemo_mcp.tools.common import Clock
 
-ToolContext = Context[Dependencies, Any]
+ToolContext = Context[MCPDependencies, Any]
 LOCAL_READ = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -255,7 +255,7 @@ def analysis_metadata(meta: ToolMeta, state: WeaknessAnalysisState, health: Data
             meta.completeness = Completeness.STALE
 
 
-def register(server: MCPServer[Dependencies], clock: Clock) -> None:
+def register(server: MCPServer[MCPDependencies], clock: Clock) -> None:
     @server.tool(annotations=LOCAL_READ)
     async def get_daily_study_dashboard(ctx: ToolContext) -> ToolEnvelope[DashboardView]:
         """Read today's Shanghai progress, latest observed words and top 10 local scores.

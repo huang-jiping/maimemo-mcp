@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
@@ -48,15 +48,18 @@ async def open_upstream(
     credentials: UpstreamCredentialSettings,
     sessions: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[UpstreamResources]:
+    stack = AsyncExitStack()
     http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+    stack.push_async_callback(http_client.aclose)
     limiter = SharedRateLimiter(sessions)
-    transport = MaimemoTransport(
-        credentials.read_maimemo_token(),
-        credentials.read_token_fingerprint_key(),
-        limiter,
-        client=http_client,
-    )
     try:
+        transport = MaimemoTransport(
+            credentials.read_maimemo_token(),
+            credentials.read_token_fingerprint_key(),
+            limiter,
+            client=http_client,
+        )
+        stack.push_async_callback(transport.aclose)
         yield UpstreamResources(
             http_client=http_client,
             limiter=limiter,
@@ -66,5 +69,4 @@ async def open_upstream(
             study=StudyClient(transport),
         )
     finally:
-        await transport.aclose()
-        await http_client.aclose()
+        await stack.aclose()

@@ -1,5 +1,9 @@
 # 墨墨学习数据基础设施设计
 
+> 历史文档：本文保留 0.1.x 单镜像阶段的原始设计证据。当前命名与多包部署以
+> `docs/superpowers/specs/2026-10-03-maimemo-project-naming-and-packaging-design.md` 为准；
+> 升级步骤见 `docs/migration/maimemo-0.2.0.md`。
+
 ## 1. 文档状态
 
 - 日期：2026-10-02

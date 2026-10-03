@@ -1,5 +1,9 @@
 # 墨墨学习数据基础设施实施计划
 
+> 历史文档：本文保留 0.1.x 单镜像实施过程与验收证据，不应用于当前部署。当前设计见
+> `docs/superpowers/specs/2026-10-03-maimemo-project-naming-and-packaging-design.md`，迁移步骤见
+> `docs/migration/maimemo-0.2.0.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 构建一个运行在 NAS 上的 Python MCP 服务，完整接入墨墨当前 17 个只读 API，持续保存个人学习历史，提供可解释薄弱词分析和可撤销的本地混淆反馈。

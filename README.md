@@ -1,4 +1,4 @@
-# maimemo-mcp
+# maimemo
 
 [![CI](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml/badge.svg)](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml)
 
@@ -10,15 +10,15 @@
 
 ## 开发
 
-安装 uv 后运行 `uv sync --frozen`，执行 `uv run pytest -v`、
-`uv run ruff check src tests` 和 `uv run mypy src`。所有依赖固定在 `uv.lock`。
+安装 uv 后运行 `uv sync --frozen`，执行 `uv run python -m pytest -v`、
+`uv run ruff check .`，并对 `packages/*/src` 运行 mypy。所有依赖固定在 `uv.lock`。
 
 ## 配置
 
-参考 `.env.example`，通过进程环境传入配置。`Settings.load()` 不自动加载 `.env`。
-`MAIMEMO_DATABASE_URL`、`MAIMEMO_TOKEN_FILE` 和
-`MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE` 必填。Token 和独立的指纹密钥从只读文件
-或 Docker Secret 注入，仅显式调用读取接口时读取，不支持明文 Token 环境变量。
+参考 `.env.example`，通过进程环境传入配置。各运行包只读取自己的设置：Server 和迁移
+只需要 `MAIMEMO_DATABASE_URL`；MCP 与 Worker 还需要 `MAIMEMO_TOKEN_FILE` 和
+`MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE`。Token 和独立的指纹密钥从只读文件
+或 Docker Secret 注入，不支持明文 Token 环境变量。
 不要提交真实凭据、Token 或个人学习数据。
 
 默认学习时区为 `Asia/Shanghai`，今日数据间隔为 30 分钟，学习记录间隔为 120 分钟。
@@ -37,10 +37,16 @@ MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不�
 
 ## 运行形态
 
-同一镜像提供两个互相独立的命令：
+仓库是四包工作区：共享核心 `maimemo`，以及三个可独立构建和部署的运行包
+`maimemo-server`、`maimemo-mcp`、`maimemo-worker`。Compose 项目固定为 `maimemo`，包含：
 
+- `migrate`：复用 Server 镜像的一次性数据库升级任务；
+- `server`：主页、健康检查和阶段 B 的 OAuth 入口；
 - `mcp`：Streamable HTTP MCP 服务，内部端点为 `/mcp`；
 - `worker`：按上海学习日采集正式历史并计算薄弱词；MCP 或 Tunnel 重启不影响它。
+
+三个镜像使用统一版本：`ghcr.io/huang-jiping/maimemo-server`、
+`ghcr.io/huang-jiping/maimemo-mcp`、`ghcr.io/huang-jiping/maimemo-worker`。
 
 正式采集在同一事务提交原始快照、规范化历史、成功 slot 和评分；评分失败会回滚并允许
 同一 slot 重试。today 在锁后采样时钟，并核对两次 HTTP 前后的上海日期；跨午夜安全失败，
@@ -53,10 +59,11 @@ MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不�
 `tests/mcp/test_composite_tools.py::test_worker_persists_scores_visible_through_real_mcp`。
 这些本地证据不表示真实墨墨 API 或 Secure MCP Tunnel 门禁已经通过。
 
-推荐用 `compose.yaml` 连接 NAS 上已有的 PostgreSQL 15+。默认不发布 MCP 端口；Secure MCP
-Tunnel 在同一 Docker 网络内使用 `http://maimemo-mcp:8000/mcp`，原生 NAS Tunnel Client
+推荐用 `compose.yaml` 连接 NAS 上已有的 PostgreSQL 15+。部署时先执行
+`docker compose run --rm migrate upgrade head`，再启动 `server`、`mcp`、`worker`。
+默认不发布 MCP 端口；Secure MCP Tunnel 在同一 Docker 网络内使用 `http://mcp:8000/mcp`，原生 NAS Tunnel Client
 则只绑定 `127.0.0.1`。完整部署、迁移、密钥权限、备份恢复和 Tunnel 步骤见
-`docs/operations.md` 与 `docs/tunnel-setup.md`。
+`docs/operations.md`、`docs/tunnel-setup.md` 与 `docs/migration/maimemo-0.2.0.md`。
 
 ## 只读真实接口冒烟
 

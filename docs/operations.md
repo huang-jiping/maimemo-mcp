@@ -1,8 +1,15 @@
 # 运维手册
 
-本文针对用户自有 NAS 上的私有部署。Compose 只运行同一只读应用镜像的 `mcp` 与
-`worker` 两个命令；PostgreSQL 必须是 NAS 上已有的外部 PostgreSQL 15+。默认不发布
-MCP 端口，网络仍保留出站能力以访问墨墨 API。
+本文针对用户自有 NAS 上的私有部署。Compose 项目名为 `maimemo`，长期运行 `server`、
+`mcp`、`worker`，并提供一次性 `migrate` 服务。PostgreSQL 必须是 NAS 上已有的外部
+PostgreSQL 15+。基础配置不发布宿主机端口，`maimemo-app` 网络保留出站能力以访问墨墨
+API 和外部 PostgreSQL；反向代理网络只通过 `compose.proxy.example.yaml` 按需附加到 Server。
+
+三个独立镜像使用同一个发布版本：
+
+- `ghcr.io/huang-jiping/maimemo-server`：Server 与受限迁移命令；
+- `ghcr.io/huang-jiping/maimemo-mcp`：MCP 协议服务；
+- `ghcr.io/huang-jiping/maimemo-worker`：后台采集与分析。
 
 ## 1. 部署前准备
 
@@ -28,7 +35,8 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
    Linux NAS 上确保目录允许 UID10001 遍历（例如 `mkdir -p var && chmod 0755 var`）。
    状态 writer 每次原子发布均设为 `0644`，文件仅含公开规范 hash、时间和 severity；
    不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `var/`。
-4. 设置 `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
+4. 从 `.env.example` 创建不提交 Git 的 `.env`，固定三个已验收的镜像 tag 或 digest，并设置
+   `MAIMEMO_DATABASE_URL`。允许 SQLAlchemy 的
    `postgresql+psycopg://user:password@host:5432/database` 形式。
 
 不要把 `.env`、数据库口令、Token、fingerprint key 或真实个人响应放入构建目录、镜像
@@ -38,37 +46,49 @@ MCP 端口，网络仍保留出站能力以访问墨墨 API。
 
 ```text
 docker compose config
-docker compose build --pull
+docker compose pull
 python scripts/check_compose_secrets.py \
   --token-file ./secrets/maimemo_token \
   --fingerprint-key-file ./secrets/token_fingerprint_key \
-  --image maimemo-mcp:local
-docker compose run --rm --entrypoint /opt/venv/bin/python maimemo-mcp -m alembic upgrade head
-docker compose up -d
+  --server-image ghcr.io/huang-jiping/maimemo-server:0.2.0 \
+  --mcp-image ghcr.io/huang-jiping/maimemo-mcp:0.2.0 \
+  --worker-image ghcr.io/huang-jiping/maimemo-worker:0.2.0
+docker compose run --rm migrate upgrade head
+docker compose up -d server mcp worker
 docker compose ps
 ```
 
-secret 审计通过真实 `docker compose run` 以 UID 10001 读取两份挂载，并逐一确认写入失败；
-它只输出计数和 UID，不输出 secret 内容。`--synthetic --image maimemo-mcp:test` 可用于不接触
-真实 secret 的 Docker 引擎自检，但不能替代生产源文件 owner/ACL 检查。
+secret 审计通过真实 `docker compose run` 证明 MCP 与 Worker 以 UID 10001 只读访问两份
+挂载，同时证明 Server 与 migrate 完全看不到它们。输出只包含计数和 UID，不包含 secret。
+`--synthetic` 可用于不接触真实 secret 的 Docker 引擎自检，但不能替代生产源文件 ACL 检查。
+
+本地开发镜像使用以下命令构建，NAS 正式部署优先拉取 CI 发布并记录 digest 的镜像：
+
+```text
+docker build --target server -t maimemo-server:test -f docker/Dockerfile .
+docker build --target mcp -t maimemo-mcp:test -f docker/Dockerfile .
+docker build --target worker -t maimemo-worker:test -f docker/Dockerfile .
+```
 
 镜像使用固定 digest 的 Python 3.12 基础镜像、锁定的 `uv.lock` 和
-`uv sync --frozen --no-dev`。运行用户为 UID/GID 10001，根文件系统只读，移除全部 Linux
-capabilities。`restart: unless-stopped` 只负责进程意外退出后的重启；MCP 的就绪检查真实
-查询 PostgreSQL。Worker 没有伪造的健康检查：其采集成败通过结构化日志、
+`uv sync --frozen --no-dev --no-editable --package ...`。运行用户为 UID/GID 10001，根文件
+系统只读，移除全部 Linux capabilities。`restart: unless-stopped` 只负责进程意外退出后的
+重启；Server 就绪检查同时核对 PostgreSQL 与 Alembic 头，MCP 就绪检查查询 PostgreSQL。
+Worker 没有伪造的健康检查：其采集成败通过结构化日志、
 `ingestion_run` 和 MCP 数据健康工具观察。
 
-`maimemo-private` 是未发布端口的 Compose bridge。不能设为 Docker `internal: true`，否则
+`maimemo-app` 是未发布端口的 Compose bridge。不能设为 Docker `internal: true`，否则
 会阻断墨墨 API 的必要出站连接。默认只有同一 Docker 网络内的进程可访问
-`http://maimemo-mcp:8000/mcp`。Compose 显式把唯一内部 DNS 名 `maimemo-mcp` 加入
+`http://mcp:8000/mcp`。Compose 显式把内部 DNS 名 `mcp` 加入
 `MAIMEMO_MCP_ALLOWED_HOSTS`；服务端只为该精确名字及其端口形式扩展 Host allowlist，其他
 Host 仍被 DNS rebinding 防护拒绝。非 Compose 部署默认不增加任何内部 Host。
 
 健康检查：
 
 ```text
-docker compose exec maimemo-mcp /opt/venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read().decode())"
-docker compose logs --since 30m maimemo-mcp maimemo-worker
+docker compose exec server /opt/venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3).read().decode())"
+docker compose exec mcp /opt/venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read().decode())"
+docker compose logs --since 30m server mcp worker
 ```
 
 日志只应包含 allowlist 字段。若发现凭据或个人正文，立即停止服务、轮换相关凭据并保留
@@ -98,14 +118,14 @@ uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml -
 
 ```yaml
 services:
-  maimemo-mcp:
+  mcp:
     ports:
       - "127.0.0.1:8000:8000"
 ```
 
 然后使用两份 Compose 文件启动，并让 Tunnel Client 连接
 `http://127.0.0.1:8000/mcp`。不得改成 `0.0.0.0:8000:8000`。若 Tunnel Client 在同一
-Docker 网络内，可直接使用 `http://maimemo-mcp:8000/mcp`，但镜像与版本必须先按
+Docker 网络内，可直接使用 `http://mcp:8000/mcp`，但镜像与版本必须先按
 `docs/tunnel-setup.md` 核验。该 DNS 名由 Compose 显式 allowlist 放行；不要通过通配符扩大
 Host 范围。
 
@@ -162,13 +182,16 @@ python scripts/restore_postgres.py \
 
 ## 6. 升级与回滚
 
-1. 先执行新备份和空库恢复演练。
-2. 构建带唯一版本标签的镜像并记录 digest；不要以 `latest` 作为回滚证据。
-3. 执行迁移，再逐个重建 MCP 与 Worker。
-4. 核对 `/health/ready`、迁移版本、最近采集时间和连续失败数。
-5. 应用回滚只能切回已记录 digest；数据库迁移是否可降级必须单独验证。0002/0003 对不可
+1. 先执行新备份和空库恢复演练，且不要删除或重建现有 PostgreSQL 数据库。
+2. 记录 Server、MCP、Worker 三个当前镜像 digest；不要以 `latest` 作为回滚证据。
+3. 拉取同一版本的三个新镜像，先停止旧 Worker，避免新旧调度器并发采集。
+4. 执行 `docker compose run --rm migrate upgrade head`，再启动 `server`、`mcp`、`worker`。
+5. 核对 Server/MCP `/health/ready`、迁移版本、最近采集时间和连续失败数。
+6. 应用回滚只能把三个镜像成套切回已记录 digest；数据库迁移是否可降级必须单独验证。0002/0003 对不可
    表示的数据会拒绝降级；0004 的 `failed_api_snapshot` 非空时拒绝丢失失败证据。
    不得用强制清表绕过；失败快照与学习原始快照同样按敏感个人证据保护并纳入备份。
+
+从旧单镜像部署迁移到 0.2.0 的精确步骤见 `docs/migration/maimemo-0.2.0.md`。
 
 Tunnel 中断不影响 Worker。数据库不可用时，就绪检查失败且采集不得以内存结果冒充已
 持久化成功。
@@ -286,10 +309,16 @@ docker compose -f compose.test.yaml down
 ```text
 uv lock --check
 uv run ruff check .
-uv run mypy src
-uv run pytest -v
+uv run mypy packages/maimemo/src packages/maimemo-mcp/src packages/maimemo-server/src packages/maimemo-worker/src
+uv run python -m pytest -v
+uv build --package maimemo
+uv build --package maimemo-mcp
+uv build --package maimemo-server
+uv build --package maimemo-worker
 docker compose config
-docker build -t maimemo-mcp:test .
+docker build --target server -t maimemo-server:0.2.0-test -f docker/Dockerfile .
+docker build --target mcp -t maimemo-mcp:0.2.0-test -f docker/Dockerfile .
+docker build --target worker -t maimemo-worker:0.2.0-test -f docker/Dockerfile .
 git status --short
 ```
 

@@ -26,6 +26,35 @@ EXPECTED_TABLES = {
 }
 
 
+async def test_server_readiness_confirms_database_and_migration_head(
+    postgres_url: str, database: AsyncEngine
+) -> None:
+    import httpx
+    from maimemo.config import DatabaseSettings
+    from maimemo_server.app import create_app
+    from maimemo_server.config import ServerSettings
+
+    settings = ServerSettings(database=DatabaseSettings(database_url=postgres_url))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(settings)),
+        base_url="http://server.test",
+    ) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_restricted_migration_entrypoint_runs_current_and_upgrade_head(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maimemo_server.migrate import main
+
+    monkeypatch.setenv("MAIMEMO_DATABASE_URL", postgres_url)
+    assert main(["current"]) == 0
+    assert main(["upgrade", "head"]) == 0
+
+
 async def test_upgrade_creates_expected_tables(database: AsyncEngine) -> None:
     async with database.connect() as connection:
         tables = await connection.run_sync(lambda conn: inspect(conn).get_table_names())

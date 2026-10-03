@@ -84,3 +84,9 @@ def test_mcp_contains_only_protocol_adapter_modules() -> None:
         "server.py",
         "tools",
     }
+
+
+def test_server_never_imports_other_runtime_packages() -> None:
+    assert forbidden_imports(
+        "packages/maimemo-server/src", {"maimemo_mcp", "maimemo_worker"}
+    ) == []

@@ -371,11 +371,23 @@ name = "maimemo-server"
 version = "0.2.0"
 source = { editable = "packages/maimemo-server" }
 dependencies = [
+    { name = "alembic" },
     { name = "maimemo" },
+    { name = "pydantic" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "maimemo", editable = "packages/maimemo" }]
+requires-dist = [
+    { name = "alembic", specifier = ">=1,<2" },
+    { name = "maimemo", editable = "packages/maimemo" },
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },
+    { name = "starlette", specifier = ">=1,<2" },
+    { name = "uvicorn", specifier = ">=0.54,<1" },
+]
 
 [[package]]
 name = "maimemo-worker"

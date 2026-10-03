@@ -95,3 +95,72 @@ def test_stable_promotion_is_separate_and_never_rolls_back(release: Any) -> None
 def test_malformed_tags_fail_with_fixed_message(release: Any, tag: str) -> None:
     with pytest.raises(release.ReleaseError, match="^release tag is invalid$"):
         release.validate_tag(tag)
+
+
+@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "secret", "c" * 41])
+def test_noncanonical_commits_fail_with_fixed_message(release: Any, commit: str) -> None:
+    with pytest.raises(release.ReleaseError, match="^release commit is invalid$"):
+        release.validate_commit(commit)
+
+
+@pytest.mark.parametrize(
+    "digest",
+    ["secret", "sha256:" + "a" * 63, "sha256:" + "A" * 64, "sha256:" + "a" * 64 + "\n"],
+)
+def test_malformed_digests_fail_before_registry_access(release: Any, digest: str) -> None:
+    registry = Registry()
+    with pytest.raises(release.ReleaseError, match="^image digest is invalid$"):
+        release.publish_release(registry, "v0.2.0", COMMIT, digest)
+    assert registry.writes == []
+
+
+@pytest.mark.parametrize(
+    ("candidate", "stable", "wanted"),
+    [
+        ("v0.2.0", "v0.10.0", OTHER_DIGEST),
+        ("v0.10.0", "v0.2.0", DIGEST),
+        ("v1.0.0", "v0.99.99", DIGEST),
+        ("v1.0.1", "v1.0.10", OTHER_DIGEST),
+    ],
+)
+def test_stable_order_compares_numeric_semver_components(
+    release: Any,
+    candidate: str,
+    stable: str,
+    wanted: str,
+) -> None:
+    candidate_alias = candidate.removeprefix("v")
+    stable_alias = stable.removeprefix("v")
+    registry = Registry(
+        {candidate_alias: DIGEST, stable_alias: OTHER_DIGEST, "stable": OTHER_DIGEST},
+        {DIGEST: candidate, OTHER_DIGEST: stable},
+    )
+    assert release.promote_stable(registry, candidate, DIGEST) == wanted
+    assert registry.refs["stable"] == wanted
+
+
+@pytest.mark.parametrize("version", [None, "private https://registry.invalid", "v01.2.3"])
+def test_unknown_stable_version_fails_safely_without_promotion(
+    release: Any,
+    version: Any,
+) -> None:
+    registry = Registry(
+        {"0.2.0": DIGEST, "stable": OTHER_DIGEST},
+        {OTHER_DIGEST: version},
+    )
+    with pytest.raises(release.ReleaseError, match="^stable version metadata is invalid$"):
+        release.promote_stable(registry, "v0.2.0", DIGEST)
+    assert registry.refs["stable"] == OTHER_DIGEST
+    assert registry.writes == []
+
+
+def test_cli_parser_failure_does_not_echo_unknown_argument(
+    release: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert release.main(
+        ["preflight", "--tag", "v0.2.0", "--commit", COMMIT, "--private-auth=secret"]
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "release arguments are invalid\n"

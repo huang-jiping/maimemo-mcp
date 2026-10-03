@@ -24,7 +24,7 @@
 - 不把真实 Token、数据库密码、OAuth secret、个人响应或 NAS 地址写入仓库、镜像、日志和测试。
 - Windows 命令使用 PowerShell 7；每个外部命令后检查 `$LASTEXITCODE`。
 - 当前只读检查确认 Git 2.54.0 和 Docker Compose v5.1.4 可用，Docker Engine 29.5.3 正在运行。
-- 当前会话 PATH 中 `uv` 与 `gh` 不可用，`WindowsApps` 的 Python 是无效占位程序；执行前必须先定位已安装工具或取得用户授权后解决环境，不能自动安装。
+- 已验证用户级 `uv 0.12.22` 位于 `C:\Users\huang\.local\bin\uv.exe`，且 `uv` 可解析并运行 Python 3.12.15；系统另有 Python 3.14.5，但本项目不得用它替代固定的 3.12。`gh` 仍需在执行前定位并完成认证验证。
 
 ## Review Focus
 
@@ -64,11 +64,22 @@ gh --version
 gh auth status
 ```
 
-Expected：全部命令退出码为 0。当前已知 `uv` 和 `gh` 在 PATH 中缺失，因此未解决前不得开始 Task 1；不得使用 `WindowsApps` Python 占位程序。
+Expected：全部命令退出码为 0。`uv` 已安装到用户 PATH；若新终端仍找不到它，先确认用户 PATH 已刷新。`gh` 的路径和认证必须在开始 Task 1 前验证；不得使用 `WindowsApps` Python 占位程序。
 
-- [ ] **步骤 3：建立隔离工作树**
+- [ ] **步骤 3：确认项目使用 Python 3.12**
 
-使用 `superpowers:using-git-worktrees` 创建 `codex/maimemo-packaging` 工作树，并在新目录重新执行步骤 1、2。
+Run:
+
+```powershell
+uv python find 3.12
+uv run --no-project --python 3.12 python --version
+```
+
+Expected：两条命令退出码为 0，解释器版本为 Python 3.12.x。不得隐式改用 3.14，也不得在本计划执行中自动安装其他 Python 版本。
+
+- [ ] **步骤 4：建立隔离工作树**
+
+使用 `superpowers:using-git-worktrees` 创建 `codex/maimemo-packaging` 工作树，并在新目录重新执行步骤 1 至 3。
 
 ### Task 1: 建立可渐进迁移的 uv 工作区骨架
 
@@ -100,10 +111,10 @@ def test_workspace_declares_expected_members() -> None:
     }
 
 def test_initial_package_versions_are_aligned() -> None:
-    assert package_versions() == {'0.2.0'}
+    assert workspace_member_versions() == {'0.2.0'}
 ```
 
-辅助函数只读取 TOML，不导入产品代码；同时断言三个成员均存在 `[build-system]` 和 `src` 包映射。
+辅助函数只读取三个 workspace 成员的 TOML，不把迁移期间仍为 `0.1.0` 的根项目计入版本集合，也不导入产品代码；同时断言三个成员均存在 `[build-system]` 和 `src` 包映射。
 
 - [ ] **步骤 2：运行测试并确认失败**
 
@@ -125,7 +136,7 @@ maimemo-server = { workspace = true }
 maimemo-worker = { workspace = true }
 ```
 
-三个成员都声明 Python 3.12 和 Hatchling；本任务只创建最小 `__init__.py`，不复制业务代码。
+三个成员都声明 Python 3.12 和 Hatchling；本任务只创建最小 `__init__.py`，不复制业务代码。占位阶段的 `maimemo-server` 与 `maimemo-worker` 均声明 `maimemo>=0.2.0,<0.3` 并通过 `[tool.uv.sources]` 指向 workspace，使后续边界测试从一开始就建立正确依赖方向。
 
 - [ ] **步骤 4：重新生成锁文件并验证成员构建**
 
@@ -164,11 +175,14 @@ git commit -m 'build(workspace): 建立多包项目骨架'
 - Move: `src/maimemo_mcp/database_url.py` → `packages/maimemo/src/maimemo/database_url.py`
 - Move: `src/maimemo_mcp/logging.py` → `packages/maimemo/src/maimemo/logging.py`
 - Move: `src/maimemo_mcp/time.py` → `packages/maimemo/src/maimemo/time.py`
+- Move: `src/maimemo_mcp/ingestion/__init__.py` → `packages/maimemo/src/maimemo/ingestion/__init__.py`
 - Move: `src/maimemo_mcp/ingestion/hashing.py` → `packages/maimemo/src/maimemo/ingestion/hashing.py`
 - Move: `src/maimemo_mcp/ingestion/normalizers.py` → `packages/maimemo/src/maimemo/ingestion/normalizers.py`
 - Move: `src/maimemo_mcp/ingestion/service.py` → `packages/maimemo/src/maimemo/ingestion/service.py`
 - Create: `packages/maimemo/src/maimemo/config.py`
+- Create: `packages/maimemo/src/maimemo/application/__init__.py`
 - Create: `packages/maimemo/src/maimemo/application/resources.py`
+- Create: `packages/maimemo/src/maimemo/ingestion/locks.py`
 - Modify: `src/maimemo_mcp/config.py`
 - Modify: all affected imports under `src/`, `scripts/`, `migrations/`, and `tests/`
 - Create: `tests/architecture/test_import_boundaries.py`
@@ -176,9 +190,11 @@ git commit -m 'build(workspace): 建立多包项目骨架'
 
 **Interfaces:**
 - Produces: `CoreSettings`, `DatabaseSettings`, `UpstreamCredentialSettings`, `AnalysisIntervals`。
+- Produces: `configure_logging(log_level: str) -> None`；日志配置不得依赖任一运行模块的 Settings。
 - Produces: `create_async_engine(database_url: str) -> AsyncEngine` and `create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]`。
 - Produces: `open_database(database: DatabaseSettings) -> AsyncIterator[DatabaseResources]` and `open_upstream(credentials: UpstreamCredentialSettings, sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[UpstreamResources]`。
-- Produces dependency ownership in `packages/maimemo/pyproject.toml`: `pydantic>=2,<3`、`sqlalchemy[asyncio]>=2,<3`、`psycopg[binary]>=3,<4`、`httpx>=0.28,<1`、`pyyaml>=6,<7`、`tzdata>=2025.2`。
+- Produces: `advisory_key(identity: str, scheduled_at: datetime) -> int` in `maimemo.ingestion.locks`，供核心仓库和 Worker 共同使用。
+- Produces dependency ownership in `packages/maimemo/pyproject.toml`: `pydantic>=2,<3`、`sqlalchemy[asyncio]>=2,<3`、`psycopg[binary]>=3,<4`、`httpx>=0.28,<1`、`tzdata>=2025.2`。PyYAML 不进入核心产品依赖。
 - Consumes: Task 1 的 `maimemo` workspace 成员。
 
 - [ ] **步骤 1：编写失败的核心配置和导入边界测试**
@@ -195,9 +211,12 @@ def test_upstream_credentials_are_loaded_only_when_requested() -> None:
 
 def test_core_never_imports_runtime_packages() -> None:
     assert forbidden_imports('packages/maimemo/src', {'maimemo_mcp', 'maimemo_server', 'maimemo_worker'}) == []
+
+def test_repository_uses_core_advisory_key() -> None:
+    assert advisory_key_import('maimemo.storage.repositories') == 'maimemo.ingestion.locks'
 ```
 
-测试还应证明数据库 URL 错误不会泄露密码，迁移仅构造 `DatabaseSettings` 时不要求 Token。
+测试还应证明数据库 URL 错误不会泄露密码，迁移仅构造 `DatabaseSettings` 时不要求 Token。Task 3 再增加 Worker 对同一核心函数的导入断言。
 
 - [ ] **步骤 2：运行新测试并确认失败**
 
@@ -207,11 +226,11 @@ Expected：FAIL，原因是核心包和配置模型尚未提取。
 
 - [ ] **步骤 3：移动核心代码并更新内部导入**
 
-使用 `git mv` 保留历史。将 `maimemo_client` 更名为 `api_client`，把所有共享模块导入改为 `maimemo.*`；不得留下复制后的第二份实现。
+使用 `git mv` 保留历史。将 `maimemo_client` 更名为 `api_client`，把所有共享模块导入改为 `maimemo.*`；不得留下复制后的第二份实现。将现有 `advisory_key` 从调度器抽到 `maimemo.ingestion.locks`，并让 `maimemo.storage.repositories` 改为导入核心函数，避免核心层反向依赖 Worker。
 
 - [ ] **步骤 4：实现细粒度核心配置与资源构造接口**
 
-`CoreSettings` 只组合数据库和非 secret 运行设置；`UpstreamCredentialSettings` 单独读取 `MAIMEMO_TOKEN_FILE` 与 `MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE`。引擎构造函数接收数据库 URL，不接收任何运行模块 Settings。
+`CoreSettings` 只组合数据库和非 secret 运行设置；`UpstreamCredentialSettings` 单独读取 `MAIMEMO_TOKEN_FILE` 与 `MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE`。引擎构造函数接收数据库 URL，不接收任何运行模块 Settings；`configure_logging` 只接收日志级别字符串。
 
 - [ ] **步骤 5：更新现有测试和脚本导入**
 
@@ -265,7 +284,7 @@ git commit -m 'refactor(core): 提取共享业务核心包'
 - Produces: `WorkerDependencies(service: StudyIngestionService, schedule: Schedule)`。
 - Produces: `open_worker_dependencies(settings: WorkerSettings) -> AsyncIterator[WorkerDependencies]`。
 - Produces: console script `maimemo-worker = maimemo_worker.runtime:main`。
-- Produces dependency ownership in `packages/maimemo-worker/pyproject.toml`: only `maimemo>=0.2.0,<0.3` as a workspace dependency。
+- Produces dependency ownership in `packages/maimemo-worker/pyproject.toml`: `maimemo>=0.2.0,<0.3`、`pydantic>=2,<3`、`sqlalchemy[asyncio]>=2,<3`；`maimemo` 通过 workspace source 解析。
 - Consumes: Task 2 的核心资源构造函数和采集服务。
 
 - [ ] **步骤 1：编写失败的 Worker 配置和依赖边界测试**
@@ -277,6 +296,9 @@ def test_worker_settings_do_not_require_mcp_environment(environ: dict[str, str])
 
 def test_worker_package_never_imports_mcp() -> None:
     assert forbidden_imports('packages/maimemo-worker/src', {'maimemo_mcp'}) == []
+
+def test_worker_uses_core_advisory_key() -> None:
+    assert advisory_key_import('maimemo_worker.scheduler') == 'maimemo.ingestion.locks'
 ```
 
 增加入口测试，断言缺失 Worker 所需 secret 时返回受控的 `configuration_error`，且输出不包含输入 URL 或 secret。
@@ -289,7 +311,7 @@ Expected：FAIL，原因是 Worker 仍位于旧主包并复用 MCP 依赖容器�
 
 - [ ] **步骤 3：移动 Worker 调度和循环代码**
 
-将 `Schedule` 改为接收 `AnalysisIntervals`，不得接收 MCP Settings。业务采集继续由 `maimemo.ingestion.service` 提供。
+将 `Schedule` 改为接收 `AnalysisIntervals`，不得接收 MCP Settings。业务采集继续由 `maimemo.ingestion.service` 提供；调度器从 `maimemo.ingestion.locks` 导入 `advisory_key`，不得在 Worker 中保留第二份实现。
 
 - [ ] **步骤 4：实现 Worker 独立配置和依赖组装**
 
@@ -333,13 +355,14 @@ git commit -m 'refactor(worker): 拆分独立任务运行包'
 
 **Files:**
 - Create: `packages/maimemo-mcp/pyproject.toml`
+- Create: `packages/maimemo-mcp/src/maimemo_mcp/__init__.py`
 - Move: `src/maimemo_mcp/mcp_server/app.py` → `packages/maimemo-mcp/src/maimemo_mcp/server.py`
 - Move: `src/maimemo_mcp/mcp_server/dependencies.py` → `packages/maimemo-mcp/src/maimemo_mcp/dependencies.py`
 - Move: `src/maimemo_mcp/mcp_server/envelopes.py` → `packages/maimemo-mcp/src/maimemo_mcp/envelopes.py`
 - Move: `src/maimemo_mcp/mcp_server/health.py` → `packages/maimemo-mcp/src/maimemo_mcp/health.py`
 - Move: `src/maimemo_mcp/mcp_server/tools/` → `packages/maimemo-mcp/src/maimemo_mcp/tools/`
+- Move/modify: `src/maimemo_mcp/runtime.py` → `packages/maimemo-mcp/src/maimemo_mcp/runtime.py`
 - Create: `packages/maimemo-mcp/src/maimemo_mcp/config.py`
-- Modify: `packages/maimemo-mcp/src/maimemo_mcp/__init__.py`
 - Remove: `src/maimemo_mcp/` after all code is relocated
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
@@ -351,8 +374,8 @@ git commit -m 'refactor(worker): 拆分独立任务运行包'
 - Produces: `MCPSettings(core: CoreSettings, upstream: UpstreamCredentialSettings, host: str, port: int, allowed_hosts: tuple[str, ...], drift_state_file: Path)`。
 - Produces: `MCPDependencies` and `open_mcp_dependencies(settings: MCPSettings) -> AsyncIterator[MCPDependencies]`。
 - Produces: `create_mcp_app(settings: MCPSettings, *, clock: Clock = utc_now) -> MCPServer`。
-- Produces: console script `maimemo-mcp = maimemo_mcp.server:main`。
-- Produces dependency ownership in `packages/maimemo-mcp/pyproject.toml`: `maimemo>=0.2.0,<0.3`、`mcp>=2,<3`、`anyio>=4,<5`、`starlette>=1,<2`、`uvicorn>=0.54,<1`。
+- Produces: console script `maimemo-mcp = maimemo_mcp.runtime:main`；`server.py` 只负责应用构造，`runtime.py` 负责参数解析和进程启动。
+- Produces dependency ownership in `packages/maimemo-mcp/pyproject.toml`: `maimemo>=0.2.0,<0.3`、`mcp>=2,<3`、`anyio>=4,<5`、`httpx>=0.28,<1`、`pydantic>=2,<3`、`sqlalchemy[asyncio]>=2,<3`、`starlette>=1,<2`、`uvicorn>=0.54,<1`。
 - Converts: root project to virtual `maimemo-workspace` with `tool.uv.package = false`。
 
 - [ ] **步骤 1：扩展失败的 workspace 和导入边界测试**
@@ -374,7 +397,7 @@ Expected：FAIL，原因是 MCP 仍是根项目且 workspace 尚缺 `maimemo-mcp
 
 - [ ] **步骤 3：移动 MCP 代码并更新导入**
 
-保留导入包名 `maimemo_mcp`，但删除 `mcp_server` 中间层；所有共享业务导入改为 `maimemo.*`。工具名称、Schema、注解和服务名 `maimemo-mcp` 保持不变。
+保留导入包名 `maimemo_mcp`，但删除 `mcp_server` 中间层；所有共享业务导入改为 `maimemo.*`。将旧 `runtime.py` 的 MCP 启动逻辑迁入新包的 `runtime.py`，不把 `main` 遗留在将被删除的旧源码树中。工具名称、Schema、注解和服务名 `maimemo-mcp` 保持不变。
 
 - [ ] **步骤 4：实现 MCP 独立配置和资源组装**
 
@@ -382,7 +405,7 @@ Expected：FAIL，原因是 MCP 仍是根项目且 workspace 尚缺 `maimemo-mcp
 
 - [ ] **步骤 5：把根项目转换为虚拟 workspace**
 
-根 `pyproject.toml` 使用 `name = 'maimemo-workspace'`、`version = '0.2.0'` 和 `tool.uv.package = false`，开发依赖保留在根项目；根项目依赖四个 workspace 成员，使 `uv run pytest` 能导入全部包。根依赖不得重复声明产品库依赖版本。
+根 `pyproject.toml` 使用 `name = 'maimemo-workspace'`、`version = '0.2.0'` 和 `tool.uv.package = false`，开发与运维依赖保留在根项目，其中包括 `pyyaml>=6,<7` 与 `types-pyyaml`；根项目依赖四个 workspace 成员，使 `uv run pytest` 能导入全部包。根依赖不得重复声明产品库依赖版本。
 
 - [ ] **步骤 6：更新 MCP、评估和安全边界测试**
 
@@ -441,7 +464,7 @@ git commit -m 'refactor(mcp): 拆分独立协议服务包'
 - Produces: `ServerSettings(database: DatabaseSettings, host: str = '0.0.0.0', port: int = 8080, external_base_url: AnyHttpUrl | None = None)`。
 - Produces: `create_app(settings: ServerSettings) -> Starlette`。
 - Produces: console scripts `maimemo-server = maimemo_server.runtime:main` and `maimemo-migrate = maimemo_server.migrate:main`。
-- Produces dependency ownership in `packages/maimemo-server/pyproject.toml`: `maimemo>=0.2.0,<0.3`、`alembic>=1,<2`、`starlette>=1,<2`、`uvicorn>=0.54,<1`。
+- Produces dependency ownership in `packages/maimemo-server/pyproject.toml`: `maimemo>=0.2.0,<0.3`、`alembic>=1,<2`、`pydantic>=2,<3`、`sqlalchemy[asyncio]>=2,<3`、`starlette>=1,<2`、`uvicorn>=0.54,<1`。Server 的配置模型和 readiness 数据库检查使用这些直接依赖，不依赖核心包的传递依赖。
 - `maimemo-migrate` accepts only `upgrade head` and `current`; unsupported commands fail closed。
 
 - [ ] **步骤 1：编写失败的 Server 配置测试**
@@ -798,13 +821,25 @@ git log --oneline --decorate -10
 git diff --check master...HEAD
 ```
 
-Expected：工作区干净，所有实施提交在当前分支，CI 全部通过。
+Expected：工作区干净，所有实施提交在当前分支，Task 8 的本地全量验收通过，分支已具备送审条件。
 
-- [ ] **步骤 2：取得外部操作确认**
+- [ ] **步骤 2：完成代码审阅并处理结论**
+
+使用 `superpowers:requesting-code-review` 对阶段 A 的完整差异执行独立审阅；逐条验证审阅意见，修正后重新运行 Task 8 的全量验收。存在未解决的 P0/P1 问题时不得创建合并请求。
+
+- [ ] **步骤 3：创建 PR 并等待 CI**
+
+将 `codex/maimemo-packaging` 推送到 origin，创建目标为 `master` 的 PR，并确认必需 CI 均基于 PR 的实际提交通过。PR 不得触发 GHCR 推送，也不得包含真实 secret。
+
+- [ ] **步骤 4：经用户确认后合并并刷新主分支**
+
+使用 `superpowers:finishing-a-development-branch` 呈现合并选项；只有用户明确选择合并后才合并 PR。随后回到主检出目录，执行 `git switch master` 和 `git pull --ff-only origin master`，并验证 `git status --short` 为空、`HEAD` 等于已合并 PR 的提交。后续仓库重命名、打 tag 和 NAS 切换只能从这个已刷新且干净的 `master` 执行。
+
+- [ ] **步骤 5：取得外部操作确认**
 
 在执行仓库重命名、推送 tag、发布镜像或切换 NAS 前，向用户列出精确目标并获得当次明确确认。未确认不得执行任何外部变更。
 
-- [ ] **步骤 3：重命名 GitHub 仓库并验证**
+- [ ] **步骤 6：重命名 GitHub 仓库并验证**
 
 Run:
 
@@ -818,7 +853,7 @@ git ls-remote origin HEAD
 
 Expected：仓库为 `huang-jiping/maimemo`，默认分支仍为 `master`，新 SSH remote 可访问。
 
-- [ ] **步骤 4：创建并推送统一版本 tag**
+- [ ] **步骤 7：创建并推送统一版本 tag**
 
 Run:
 
@@ -829,15 +864,15 @@ git push origin v0.2.0
 
 Expected：发布工作流开始运行；若 tag 已存在则停止，不覆盖。
 
-- [ ] **步骤 5：等待发布工作流并核验三个 digest**
+- [ ] **步骤 8：等待发布工作流并核验三个 digest**
 
 使用 `gh run watch` 等待对应工作流结束，再读取 GHCR 元数据。只有三个镜像的 `0.2.0` 和提交哈希标签都存在且 digest 已记录时才能继续。
 
-- [ ] **步骤 6：生成 NAS 最终 Compose 配置**
+- [ ] **步骤 9：生成 NAS 最终 Compose 配置**
 
 将三个镜像固定为验收得到的 digest，不使用 `latest` 作为部署或回滚依据。填入现有 PostgreSQL URL 和 secret 文件路径，但不得把实际值提交或粘贴到公开记录。
 
-- [ ] **步骤 7：切换 NAS 项目**
+- [ ] **步骤 10：切换 NAS 项目**
 
 执行顺序：
 
@@ -852,11 +887,11 @@ Expected：发布工作流开始运行；若 tag 已存在则停止，不覆盖�
 
 任一步失败都停止推进；恢复旧 Worker 和已记录的旧镜像 digest，不删除或重建数据库。
 
-- [ ] **步骤 8：提升 stable 标签**
+- [ ] **步骤 11：提升 stable 标签**
 
 只有 NAS 验收完成后，才把三个已验证 digest 提升为 `stable`；三者必须成套更新。
 
-- [ ] **步骤 9：在独立维护窗口重命名本地目录**
+- [ ] **步骤 12：在独立维护窗口重命名本地目录**
 
 关闭当前 Codex 工作区和占用目录的进程，在父目录确认源与目标绝对路径后，将 `P:\maimemo-mcp` 移动为 `P:\maimemo`，再重新登记项目。不得在本实施会话中直接移动活动工作区。
 
@@ -867,4 +902,4 @@ Expected：发布工作流开始运行；若 tag 已存在则停止，不覆盖�
 - Type consistency：核心资源、四类 Settings、三个运行入口和迁移入口都只定义一次，后续任务引用相同名称。
 - Review Focus：五项风险分别由 Task 2 至 Task 7 的明确测试覆盖。
 - Proportion：计划描述接口、测试和验收，不预写产品函数体；大范围文件移动集中在可独立评审的核心、Worker、MCP 三个任务。
-- Environment risk：当前 `uv`、`gh` 和可用宿主 Python 均未在 PATH 中验证成功，已列为执行前硬门禁；Docker 与 Git 已验证。
+- Environment risk：`uv 0.12.22` 与其管理的 Python 3.12.15 已验证成功，系统 Python 3.14.5 不用于本项目；`gh` 的路径与认证仍是执行前硬门禁。Docker 与 Git 已验证。

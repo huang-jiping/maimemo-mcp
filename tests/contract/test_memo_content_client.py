@@ -8,16 +8,15 @@ from typing import Any
 import httpx
 import pytest
 import yaml
-from pydantic import BaseModel, SecretStr, ValidationError
-
-from maimemo_mcp.maimemo_client import models
-from maimemo_mcp.maimemo_client.errors import UpstreamSchemaError
-from maimemo_mcp.maimemo_client.memo_content import (
+from maimemo.api_client import models
+from maimemo.api_client.errors import UpstreamSchemaError
+from maimemo.api_client.memo_content import (
     ListNotepadsRequest,
     MemoContentClient,
     QueryVocabularyRequest,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo.api_client.transport import MaimemoTransport
+from pydantic import BaseModel, SecretStr, ValidationError
 
 FIXTURES = json.loads(
     (Path(__file__).parents[1] / "fixtures/maimemo/memo_content/responses.json").read_text(

@@ -2,8 +2,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-
-from maimemo_mcp.time import learning_date
+from maimemo.time import learning_date
 
 
 @pytest.mark.parametrize(("hour", "minute", "expected"), [

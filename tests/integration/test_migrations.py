@@ -7,16 +7,15 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect, text
-from sqlalchemy.exc import DataError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-
-from maimemo_mcp.storage.schema import (
+from maimemo.storage.schema import (
     SchemaNotReadyError,
     SchemaStatus,
     inspect_schema,
     require_current_schema,
 )
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import DataError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 EXPECTED_TABLES = {
     "vocabulary",
@@ -32,6 +31,35 @@ EXPECTED_TABLES = {
     "schema_metadata",
     "alembic_version",
 }
+
+
+async def test_server_readiness_confirms_database_and_migration_head(
+    postgres_url: str, database: AsyncEngine
+) -> None:
+    import httpx
+    from maimemo.config import DatabaseSettings
+    from maimemo_server.app import create_app
+    from maimemo_server.config import ServerSettings
+
+    settings = ServerSettings(database=DatabaseSettings(database_url=postgres_url))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(settings)),
+        base_url="http://server.test",
+    ) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_restricted_migration_entrypoint_runs_current_and_upgrade_head(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maimemo_server.migrate import main
+
+    monkeypatch.setenv("MAIMEMO_DATABASE_URL", postgres_url)
+    assert main(["current"]) == 0
+    assert main(["upgrade", "head"]) == 0
 
 
 @pytest.fixture
@@ -170,8 +198,7 @@ async def test_timestamps_are_timezone_aware(database: AsyncEngine) -> None:
 async def test_migration_and_orm_have_no_schema_drift(database: AsyncEngine) -> None:
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
-
-    from maimemo_mcp.storage.base import Base
+    from maimemo.storage.base import Base
 
     async with database.connect() as connection:
         differences = await connection.run_sync(

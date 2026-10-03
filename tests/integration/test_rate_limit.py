@@ -4,11 +4,10 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from maimemo.api_client.rate_limit import SharedRateLimiter
+from maimemo.storage.database import create_session_factory
+from maimemo.storage.models.rate_limit import ApiRateLimitWindow
 from sqlalchemy import func, select, text
-
-from maimemo_mcp.maimemo_client.rate_limit import SharedRateLimiter
-from maimemo_mcp.storage.database import create_session_factory
-from maimemo_mcp.storage.models.rate_limit import ApiRateLimitWindow
 
 NOW = datetime(2026, 10, 2, tzinfo=UTC)
 FINGERPRINT = "a" * 64

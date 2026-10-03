@@ -1,13 +1,11 @@
 """Scheduling boundaries catch local-time drift and duplicate emitted slots."""
 
 from datetime import UTC, date, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.scheduler import Schedule
+from maimemo.config import AnalysisIntervals
+from maimemo_worker.scheduler import Schedule
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -16,17 +14,13 @@ def settings(
     *,
     today_interval_minutes: int | None = None,
     records_interval_minutes: int | None = None,
-) -> Settings:
-    values: dict[str, object] = {
-        "database_url": "postgresql+psycopg://unused",
-        "token_file": Path("unused"),
-        "token_fingerprint_key_file": Path("unused"),
-    }
+) -> AnalysisIntervals:
+    values: dict[str, object] = {}
     if today_interval_minutes is not None:
         values["today_interval_minutes"] = today_interval_minutes
     if records_interval_minutes is not None:
         values["records_interval_minutes"] = records_interval_minutes
-    return Settings.model_validate(values)
+    return AnalysisIntervals.model_validate(values)
 
 
 def at(hour: int, minute: int = 0, *, day: int = 2) -> datetime:

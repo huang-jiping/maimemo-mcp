@@ -5,10 +5,8 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-
-from maimemo_mcp.feedback.models import (
+from maimemo.api_client.models import Vocabulary as UpstreamVocabulary
+from maimemo.feedback.models import (
     EvidenceType,
     FeedbackDirection,
     FeedbackEventView,
@@ -17,9 +15,10 @@ from maimemo_mcp.feedback.models import (
     RecordFeedbackCommand,
     RetractFeedbackCommand,
 )
-from maimemo_mcp.feedback.service import FeedbackConflictError, FeedbackService
-from maimemo_mcp.maimemo_client.models import Vocabulary as UpstreamVocabulary
-from maimemo_mcp.storage.models import LearningFeedbackEvent, Vocabulary
+from maimemo.feedback.service import FeedbackConflictError, FeedbackService
+from maimemo.storage.models import LearningFeedbackEvent, Vocabulary
+from sqlalchemy import event, func, select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 def command(key: str = "record-key", /, **changes: object) -> RecordFeedbackCommand:

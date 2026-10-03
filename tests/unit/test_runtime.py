@@ -1,33 +1,20 @@
-"""Container entrypoint mode selection is explicit and closed."""
+"""Independent runtime entrypoints reject legacy modes and redact configuration."""
 
-import asyncio
-import sys
-import threading
-import time
-from pathlib import Path
-from typing import Any
-from unittest.mock import Mock
-
-import httpx
 import pytest
-import uvicorn
-
-from maimemo_mcp import runtime
-from maimemo_mcp.config import Settings
-from maimemo_mcp.runtime import parse_mode
-from maimemo_mcp.storage.schema import SchemaNotReadyError
 
 
-def test_runtime_accepts_only_mcp_or_worker_modes() -> None:
-    assert parse_mode(["mcp"]) == "mcp"
-    assert parse_mode(["worker"]) == "worker"
+def test_mcp_runtime_rejects_worker_mode() -> None:
+    from maimemo_mcp.runtime import main
+
     with pytest.raises(SystemExit):
-        parse_mode(["shell"])
+        main(["worker"])
 
 
 @pytest.mark.parametrize("invalid", [False, True])
 def test_startup_configuration_failure_is_controlled_and_secret_free(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], invalid: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    invalid: bool,
 ) -> None:
     import os
 
@@ -42,23 +29,24 @@ def test_startup_configuration_failure_is_controlled_and_secret_free(
         monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
         monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
         monkeypatch.setenv("MAIMEMO_MCP_PORT", url)
-    assert main(["worker"]) == 2
+    assert main([]) == 2
     output = capsys.readouterr()
     assert "SYNTHETIC_STARTUP_SECRET" not in output.err + output.out
     assert "postgresql://" not in output.err + output.out
     assert "configuration_error" in output.err
 
 
-@pytest.mark.parametrize("mode", ["worker", "mcp"])
-@pytest.mark.parametrize("private_url", [
-    "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
-    "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
-    "postgresql+psycopg://u:prefix@LEAK@localhost/d",
-])
+@pytest.mark.parametrize(
+    "private_url",
+    [
+        "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
+        "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+        "postgresql+psycopg://u:prefix@LEAK@localhost/d",
+    ],
+)
 def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    mode: str,
     private_url: str,
 ) -> None:
     import os
@@ -72,7 +60,7 @@ def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback
     monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
     monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
 
-    assert main([mode]) == 2
+    assert main([]) == 2
 
     output = capsys.readouterr()
     combined = output.err + output.out
@@ -82,27 +70,26 @@ def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback
     assert "Traceback" not in combined
 
 
-@pytest.mark.parametrize("mode", ["worker", "mcp"])
 def test_runtime_preflight_controls_late_engine_url_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    mode: str,
 ) -> None:
-    from pathlib import Path
-
-    from maimemo_mcp.config import Settings
+    from maimemo.config import CoreSettings, DatabaseSettings, UpstreamCredentialSettings
+    from maimemo_mcp.config import MCPSettings
     from maimemo_mcp.runtime import main
 
-    settings = Settings.model_construct(
-        database_url=(
-            "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d"
+    settings = MCPSettings.model_construct(
+        core=CoreSettings.model_construct(
+            database=DatabaseSettings.model_construct(
+                database_url="postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+                connect_timeout_seconds=10,
+            )
         ),
-        token_file=Path("unused"),
-        token_fingerprint_key_file=Path("unused"),
+        upstream=UpstreamCredentialSettings.model_construct(),
     )
-    monkeypatch.setattr(Settings, "load", lambda: settings)
+    monkeypatch.setattr(MCPSettings, "load", lambda: settings)
 
-    assert main([mode]) == 2
+    assert main([]) == 2
 
     output = capsys.readouterr()
     combined = output.err + output.out
@@ -111,378 +98,30 @@ def test_runtime_preflight_controls_late_engine_url_errors(
     assert "Traceback" not in combined
 
 
-@pytest.fixture
-def startup_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    token, key = tmp_path / "token", tmp_path / "key"
-    token.write_text("SYNTHETIC_TOKEN", encoding="utf-8")
-    key.write_text("SYNTHETIC_KEY", encoding="utf-8")
-    settings = Settings(
-        database_url="postgresql+psycopg://u:SYNTHETIC_DB_PASSWORD@localhost/d",
-        token_file=token, token_fingerprint_key_file=key,
-        schema_wait_timeout_seconds=1,
-    )
-    monkeypatch.setattr(Settings, "load", lambda: settings)
-    monkeypatch.setattr(runtime, "configure_logging", lambda settings: None)
-    return settings
-
-
-@pytest.mark.parametrize("mode", ["mcp", "worker"])
-@pytest.mark.parametrize("secret", ["token_file", "token_fingerprint_key_file"])
-@pytest.mark.parametrize("failure", ["missing", "unreadable", "empty", "utf8"])
-def test_secret_failure_prevents_all_database_and_service_work(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], mode: str, secret: str, failure: str,
-) -> None:
-    path = getattr(startup_settings, secret)
-    if failure == "missing":
-        path.unlink()
-    elif failure == "empty":
-        path.write_text(" \n", encoding="utf-8")
-    elif failure == "utf8":
-        path.write_bytes(b"SYNTHETIC_SECRET_BYTES\xff")
-    else:
-        read_text = Path.read_text
-
-        def denied(target: Path, **kwargs: object) -> str:
-            if target == path:
-                raise PermissionError("SYNTHETIC_PRIVATE_PATH")
-            return read_text(target, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", denied)
-    migrate = Mock()
-    serve = Mock()
-    database = Mock(side_effect=AssertionError("secret gate ran too late"))
-    monkeypatch.setattr(runtime, "run_upgrade", migrate, raising=False)
-    monkeypatch.setattr(runtime.uvicorn, "run", serve)
-    monkeypatch.setattr(runtime, "create_async_engine_from_settings", database)
-    assert runtime.main([mode]) != 0
-    assert not migrate.called and not serve.called and not database.called
-    output = capsys.readouterr()
-    assert output.out == ""
-    assert output.err.startswith("configuration_error secret:")
-    assert "SYNTHETIC" not in output.err
-    assert str(path) not in output.err
-    assert "Traceback" not in output.err
-
-
-def test_mcp_migrates_outside_event_loop_then_checks_schema_before_serving(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    main_thread = threading.get_ident()
-
-    def upgrade(settings: Settings) -> None:
-        assert settings is startup_settings
-        assert threading.get_ident() != main_thread
-        events.append("migration")
-
-    async def require(engine: object, expected: str) -> None:
-        assert expected == "0004"
-        events.append("schema")
-
-    def serve(*args: object, **kwargs: object) -> None:
-        assert events == ["migration", "schema"]
-        events.append("serve")
-
-    monkeypatch.setattr(runtime, "run_upgrade", upgrade, raising=False)
-    monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
-    monkeypatch.setattr(runtime.uvicorn, "run", serve)
-    assert runtime.main(["mcp"]) == 0
-    assert events == ["migration", "schema", "serve"]
-
-
-@pytest.mark.parametrize("stage", ["migration", "schema"])
-def test_mcp_startup_failure_never_serves_or_leaks_exception_details(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], stage: str,
-) -> None:
-    def upgrade(settings: Settings) -> None:
-        if stage == "migration":
-            raise RuntimeError("SYNTHETIC_DB_PASSWORD postgresql://private")
-
-    async def require(engine: object, expected: str) -> None:
-        raise SchemaNotReadyError()
-
-    serve = Mock()
-    monkeypatch.setattr(runtime, "run_upgrade", upgrade, raising=False)
-    monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
-    monkeypatch.setattr(runtime.uvicorn, "run", serve)
-    assert runtime.main(["mcp"]) != 0
-    assert not serve.called
-    output = capsys.readouterr()
-    assert "SYNTHETIC" not in output.err + output.out
-    assert "postgresql://" not in output.err + output.out
-    assert "Traceback" not in output.err + output.out
-
-
-@pytest.mark.parametrize("unavailable", [False, True])
-def test_worker_timeout_prevents_collection(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], unavailable: bool,
-) -> None:
-    async def require(engine: object, expected: str) -> None:
-        raise SchemaNotReadyError(unavailable=unavailable)
-
-    collect = Mock()
-    migrate = Mock(side_effect=AssertionError("worker must not migrate"))
-    monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    monitor = Mock(side_effect=AssertionError("schema gate ran too late"))
-    monkeypatch.setattr(runtime, "OpenApiDriftMonitor", monitor, raising=False)
-    monkeypatch.setattr(runtime, "run_upgrade", migrate, raising=False)
-    assert runtime.main(["worker"]) != 0
-    assert not collect.called and not migrate.called and not monitor.called
-    assert "schema_wait_timeout" in capsys.readouterr().err
-
-
-def test_worker_waits_for_current_schema_then_collects(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-
-    async def require(engine: object, expected: str) -> None:
-        assert expected == "0004"
-        events.append("schema")
-        if events == ["schema"]:
-            raise SchemaNotReadyError()
-
-    async def collect(worker: object) -> None:
-        assert events[:2] == ["schema", "schema"]
-        events.append("collect")
-
-    async def monitor(self: object) -> None:
-        assert events[:2] == ["schema", "schema"]
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    monkeypatch.setattr(runtime.OpenApiDriftMonitor, "run_forever", monitor)
-    assert runtime.main(["worker"]) == 0
-    assert events == ["schema", "schema", "collect"]
-
-
-async def test_worker_collects_despite_monitor_failure_and_cancels_monitor_on_shutdown(
-    startup_settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from maimemo_mcp.ingestion.drift_monitor import OpenApiDriftMonitor
-
-    checked, cleaned, collected = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    pinned = tmp_path / "pinned.yaml"
-    pinned.write_bytes(b"openapi: 3.0.0\npaths: {}\n")
-    events: list[str] = []
-
-    async def require(engine: object, expected: str) -> None:
-        events.append("schema")
-
-    async def sleep(seconds: float) -> None:
-        assert seconds == 21600
-        checked.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cleaned.set()
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        assert events == ["schema"]
-        raise httpx.ConnectError("SYNTHETIC_UPSTREAM_SECRET", request=request)
-
-    async def collect(worker: object) -> None:
-        assert events == ["schema"]
-        await checked.wait()
-        collected.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(runtime, "require_current_schema", require)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
-        monkeypatch.setattr(runtime, "OpenApiDriftMonitor", lambda state: OpenApiDriftMonitor(
-            state, pinned_file=pinned, client=client, sleep=sleep,
-        ))
-        task = asyncio.create_task(runtime._run_worker(startup_settings))
-        try:
-            await asyncio.wait_for(collected.wait(), 1)
-            assert not task.done()
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
-        assert cleaned.is_set()
-
-
-async def test_worker_normal_completion_also_stops_monitor(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    started, stopped = asyncio.Event(), asyncio.Event()
-
-    async def require(engine: object, expected: str) -> None:
-        pass
-
-    async def monitor(self: object) -> None:
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            stopped.set()
-
-    async def collect(worker: object) -> None:
-        await started.wait()
-
-    monkeypatch.setattr(runtime, "require_current_schema", require)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    monkeypatch.setattr(runtime.OpenApiDriftMonitor, "run_forever", monitor)
-    await asyncio.wait_for(runtime._run_worker(startup_settings), 1)
-    assert stopped.is_set()
-
-
-def test_worker_schema_probe_is_cancelled_at_wait_deadline(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cancelled = False
-
-    async def require(engine: object, expected: str) -> None:
-        nonlocal cancelled
-        try:
-            await asyncio.sleep(60)
-        finally:
-            cancelled = True
-
-    collect = Mock()
-    monkeypatch.setattr(runtime, "require_current_schema", require, raising=False)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    assert runtime.main(["worker"]) != 0
-    assert cancelled and not collect.called
-
-
-@pytest.mark.parametrize("platform", [
-    pytest.param("win32", marks=pytest.mark.skipif(
-        sys.platform != "win32", reason="requires actual Windows event loops",
-    )),
-    "linux",
-])
-def test_real_uvicorn_loop_reaches_asgi_with_psycopg_compatible_loop(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch, platform: str,
-) -> None:
-    loops: list[asyncio.AbstractEventLoop] = []
-    responses: list[dict[str, Any]] = []
-
-    async def require(engine: object, expected: str) -> None:
-        pass
-
-    async def application(scope: dict[str, Any], receive: Any, send: Any) -> None:
-        loops.append(asyncio.get_running_loop())
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"loop_ready"})
-
-    async def serve(server: uvicorn.Server, sockets: object = None) -> None:
-        # Preserve real uvicorn.run -> Server.run -> Config.get_loop_factory.
-        # Only replace socket lifetime; Config.load and ASGI dispatch remain real.
-        server.config.load()
-
-        async def receive() -> dict[str, Any]:
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(message: dict[str, Any]) -> None:
-            responses.append(message)
-
-        await server.config.loaded_app({
-            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-            "method": "GET", "scheme": "http", "path": "/", "raw_path": b"/",
-            "query_string": b"", "headers": [], "client": ("127.0.0.1", 1),
-            "server": ("127.0.0.1", 8000),
-        }, receive, send)
-        server.started = True
-
-    monkeypatch.setattr(runtime.sys, "platform", platform)
-    monkeypatch.setattr(runtime, "run_upgrade", lambda settings: None)
-    monkeypatch.setattr(runtime, "require_current_schema", require)
-    monkeypatch.setattr(runtime, "create_mcp_app", lambda settings: application)
-    monkeypatch.setattr(uvicorn.Server, "serve", serve)
-    status = runtime.main(["mcp"])
-    assert len(loops) == 1
-    assert isinstance(loops[0], asyncio.SelectorEventLoop)
-    assert status == 0
-    assert responses == [
-        {"type": "http.response.start", "status": 200, "headers": []},
-        {"type": "http.response.body", "body": b"loop_ready"},
-    ]
-
-
-@pytest.mark.parametrize("suppress_cancellation", [False, True])
-def test_worker_waits_for_cancel_cleanup_but_never_collects_after_deadline(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], suppress_cancellation: bool,
-) -> None:
-    events: list[str] = []
-    cancellation_elapsed = 0.0
-    started = time.monotonic()
-
-    async def require(engine: object, expected: str) -> None:
-        nonlocal cancellation_elapsed
-        events.append("probe")
-        try:
-            await asyncio.sleep(60)
-        except asyncio.CancelledError:
-            cancellation_elapsed = time.monotonic() - started
-            events.append("cancel")
-            # Model the driver's bounded cancellation/connection cleanup.
-            await asyncio.sleep(0.05)
-            events.append("cleaned")
-            if not suppress_cancellation:
-                raise
-
-    collect = Mock()
-    monkeypatch.setattr(runtime, "require_current_schema", require)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    assert runtime.main(["worker"]) != 0
-    assert events == ["probe", "cancel", "cleaned"]
-    assert 0.9 <= cancellation_elapsed < 3
-    assert time.monotonic() - started >= cancellation_elapsed + 0.04
-    assert not collect.called
-    assert capsys.readouterr().err == "startup_error schema_wait_timeout\n"
-
-
-def test_worker_stops_when_cancel_cleanup_becomes_schema_unavailable(
-    startup_settings: Settings, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("invalid", [False, True])
+def test_worker_startup_configuration_failure_is_controlled_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    invalid: bool,
 ) -> None:
-    events: list[str] = []
+    import os
 
-    class MemoryConnection:
-        async def __aenter__(self) -> "MemoryConnection":
-            events.append("probe")
-            return self
+    from maimemo_worker.runtime import main as worker_main
 
-        async def execute(self, statement: object) -> Mock:
-            if events.count("probe") == 1:
-                await asyncio.sleep(60)
-            # A subsequent probe would succeed, so a broken retry terminates rather
-            # than hanging the regression test. The real schema gate consumes this.
-            result = Mock()
-            result.one.return_value = ("alembic_version", "schema_metadata")
-            result.scalars.return_value.all.return_value = ["0004"]
-            return result
+    for name in list(os.environ):
+        if name.startswith("MAIMEMO_"):
+            monkeypatch.delenv(name)
+    url = "postgresql://u:SYNTHETIC_WORKER_SECRET@h.invalid/d"
+    monkeypatch.setenv("MAIMEMO_DATABASE_URL", url)
+    if invalid:
+        monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "unused")
+        monkeypatch.setenv("MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE", "unused")
+        monkeypatch.setenv("MAIMEMO_TODAY_INTERVAL_MINUTES", url)
 
-        async def __aexit__(self, kind: object, error: object, trace: object) -> None:
-            if isinstance(error, asyncio.CancelledError):
-                events.append("cancel")
-                await asyncio.sleep(0.05)
-                events.append("cleanup_failed")
-                raise OSError("SYNTHETIC_CONNECTION_CLEANUP_SECRET")
+    assert worker_main([]) == 2
 
-    class MemoryEngine:
-        def connect(self) -> MemoryConnection:
-            return MemoryConnection()
-
-        async def dispose(self) -> None:
-            events.append("disposed")
-
-    engine = MemoryEngine()
-    collect = Mock()
-    monkeypatch.setattr(runtime, "create_async_engine_from_settings", lambda settings: engine)
-    monkeypatch.setattr(runtime.Worker, "run_forever", collect)
-    # Keep require_current_schema and inspect_schema real: the cleanup OSError is
-    # converted to UNAVAILABLE, then to SchemaNotReadyError by the schema gate.
-    assert runtime.main(["worker"]) != 0
-    assert events == ["probe", "cancel", "cleanup_failed", "disposed"]
-    assert not collect.called
-    assert capsys.readouterr().err == "startup_error schema_wait_timeout\n"
+    output = capsys.readouterr()
+    combined = output.err + output.out
+    assert "SYNTHETIC_WORKER_SECRET" not in combined
+    assert "postgresql://" not in combined
+    assert "configuration_error" in output.err

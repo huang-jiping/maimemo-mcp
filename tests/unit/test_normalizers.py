@@ -3,17 +3,16 @@
 from datetime import UTC, date, datetime
 
 import pytest
-
-from maimemo_mcp.ingestion.hashing import stable_payload_hash
-from maimemo_mcp.ingestion.normalizers import (
-    normalize_daily_progress,
-    normalize_study_records,
-    normalize_today_items,
-)
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     StudyProgressResponse,
     StudyRecordsResponse,
     TodayItemsResponse,
+)
+from maimemo.ingestion.hashing import stable_payload_hash
+from maimemo.ingestion.normalizers import (
+    normalize_daily_progress,
+    normalize_study_records,
+    normalize_today_items,
 )
 
 AT = datetime(2026, 10, 1, 16, 30, tzinfo=UTC)

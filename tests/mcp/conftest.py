@@ -10,11 +10,10 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from maimemo_mcp.config import MCPSettings as Settings
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-
-from maimemo_mcp.config import Settings
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -58,8 +57,12 @@ def workflow_settings(
     token, key = tmp_path / "token", tmp_path / "key"
     token.write_text("test-token-only", encoding="utf-8")
     key.write_text("test-key-only", encoding="utf-8")
-    return Settings(
-        database_url=workflow_database.url.render_as_string(hide_password=False),
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": workflow_database.url.render_as_string(
+                hide_password=False
+            ),
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )

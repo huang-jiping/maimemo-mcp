@@ -1,4 +1,6 @@
-# maimemo-mcp
+# maimemo
+
+[![CI](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml/badge.svg)](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml)
 
 墨墨学习数据基础设施，使用 Python 3.12、PostgreSQL 和 MCP Python SDK v2。项目接入
 17 个墨墨只读操作，使用 Worker 建立可追溯的学习历史，通过 5 个组合工具提供进度、
@@ -8,15 +10,15 @@
 
 ## 开发
 
-安装 uv 后运行 `uv sync --frozen`，执行 `uv run pytest -v`、
-`uv run ruff check src tests` 和 `uv run mypy src`。所有依赖固定在 `uv.lock`。
+安装 uv 后运行 `uv sync --frozen`，执行 `uv run python -m pytest -v`、
+`uv run ruff check .`，并对 `packages/*/src` 运行 mypy。所有依赖固定在 `uv.lock`。
 
 ## 配置
 
-参考 `.env.example`，通过进程环境传入配置。`Settings.load()` 不自动加载 `.env`。
-`MAIMEMO_DATABASE_URL`、`MAIMEMO_TOKEN_FILE` 和
-`MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE` 必填。Token 和独立的指纹密钥从只读文件
-或 Docker Secret 注入，仅显式调用读取接口时读取，不支持明文 Token 环境变量。
+参考 `.env.example`，通过进程环境传入配置。各运行包只读取自己的设置：Server 和迁移
+只需要 `MAIMEMO_DATABASE_URL`；MCP 与 Worker 还需要 `MAIMEMO_TOKEN_FILE` 和
+`MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE`。Token 和独立的指纹密钥从只读文件
+或 Docker Secret 注入，不支持明文 Token 环境变量。
 不要提交真实凭据、Token 或个人学习数据。
 
 默认学习时区为 `Asia/Shanghai`，今日数据间隔为 30 分钟，学习记录间隔为 120 分钟。
@@ -31,14 +33,20 @@ MCP 容器内监听 `0.0.0.0:8000`；NAS 模板只发布主机回环地址 `127.
 本次基线包含 38 个操作，其中设计批准的 17 个操作按业务语义只读，包含查询类 POST。
 固定规范不表示允许调用其中的写操作；本项目墨墨侧范围严格只读。
 
-设计和实施计划见 `docs/superpowers/`。
+设计和实施计划见 `docs/superpowers/`；镜像发布与验收规则见 `docs/operations.md`。
 
 ## 运行形态
 
-同一镜像提供两个互相独立的命令：
+仓库是四包工作区：共享核心 `maimemo`，以及三个可独立构建和部署的运行包
+`maimemo-server`、`maimemo-mcp`、`maimemo-worker`。Compose 项目固定为 `maimemo`，包含：
 
+- `migrate`：复用 Server 镜像的一次性数据库升级任务；
+- `server`：主页、健康检查和阶段 B 的 OAuth 入口；
 - `mcp`：Streamable HTTP MCP 服务，内部端点为 `/mcp`；
 - `worker`：按上海学习日采集正式历史并计算薄弱词；MCP 或 Tunnel 重启不影响它。
+
+三个镜像使用统一版本：`ghcr.io/huang-jiping/maimemo-server`、
+`ghcr.io/huang-jiping/maimemo-mcp`、`ghcr.io/huang-jiping/maimemo-worker`。
 
 正式采集在同一事务提交原始快照、规范化历史、成功 slot 和评分；评分失败会回滚并允许
 同一 slot 重试。today 在锁后采样时钟，并核对两次 HTTP 前后的上海日期；跨午夜安全失败，
@@ -51,19 +59,16 @@ MCP 容器内监听 `0.0.0.0:8000`；NAS 模板只发布主机回环地址 `127.
 `tests/mcp/test_composite_tools.py::test_worker_persists_scores_visible_through_real_mcp`。
 这些本地证据不表示真实墨墨 API 或 Secure MCP Tunnel 门禁已经通过。
 
-NAS 私有部署从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始：在 UGOS Pro 的 Docker → 项目中
-创建/导入仓库交付的 [NAS Compose](deploy/nas/compose.yaml)，项目名为 `maimemo-mcp`，
-正常状态为 `2 / 2`。两个容器拉取同一公开镜像
-`ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}`，连接已有 external `db_net` 和
-PostgreSQL 15+（数据库与应用用户均为 `maimemo`）。MCP 启动前自动迁移；Worker 等待
-就绪并每六小时检查 OpenAPI 漂移。日常拉取/更新/重建和不可变 `vX.Y.Z` 回退均在项目页面操作。
-本地填写真实 Docker DNS、数据库口令和两份 secret；不在聊天或 Git 提交秘密。
-Docker Engine >=28.0.0 或可核验厂商回补、跨 LAN 的 8000 不可达检查仍是上线门禁。
-Secure MCP Tunnel 为后续接入，当前私有部署不需要其凭据；原生客户端将连接
-`http://127.0.0.1:8000/mcp`。详细运维和后续接入见
-[运维手册](docs/operations.md) 与 [Tunnel 说明](docs/tunnel-setup.md)。
-当前 GHCR 首次公开发布及 UGOS/NAS 实机验收未完成；需完成发布验收后才可匿名拉取。
-仓库根 `compose.yaml` 保留为通用/开发配置。
+推荐用 `compose.yaml` 连接 NAS 上已有的 PostgreSQL 15+。部署时先执行
+`docker compose run --rm migrate upgrade head`，再启动 `server`、`mcp`、`worker`。
+默认不发布 MCP 端口；Secure MCP Tunnel 在同一 Docker 网络内使用 `http://mcp:8000/mcp`，原生 NAS Tunnel Client
+则只绑定 `127.0.0.1`。完整部署、迁移、密钥权限、备份恢复和 Tunnel 步骤见
+`docs/operations.md`、`docs/tunnel-setup.md` 与 `docs/migration/maimemo-0.2.0.md`。
+
+UGOS Pro 私有部署从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始：在 Docker → 项目中导入
+[NAS Compose](deploy/nas/compose.yaml)，项目名同样为 `maimemo`。NAS 模板使用三个经 digest
+固定的镜像和四个服务，Worker 每六小时检查一次 OpenAPI 漂移。部署前必须满足 Docker
+Engine 安全版本或厂商回补门禁，并从另一台 LAN 主机验证回环发布端口不可达。
 
 ## 只读真实接口冒烟
 

@@ -3,15 +3,12 @@
 import asyncio
 import os
 import sys
-from pathlib import Path
 
 from alembic import context
+from maimemo.storage import models  # noqa: F401
+from maimemo.storage.base import Base
+from maimemo.storage.database import create_async_engine
 from sqlalchemy import Connection
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.storage import models  # noqa: F401
-from maimemo_mcp.storage.base import Base
-from maimemo_mcp.storage.database import create_async_engine_from_settings
 
 
 def database_url() -> str:
@@ -29,13 +26,7 @@ def run_migrations(connection: Connection) -> None:
 
 async def run_online() -> None:
     # Migrations need a database URL only; they never access API secrets.
-    engine = create_async_engine_from_settings(
-        Settings(
-            database_url=database_url(),
-            token_file=Path("unused"),
-            token_fingerprint_key_file=Path("unused"),
-        )
-    )
+    engine = create_async_engine(database_url())
     try:
         async with engine.connect() as connection:
             await connection.run_sync(run_migrations)

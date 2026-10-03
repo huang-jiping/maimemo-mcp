@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maimemo-mcp"
+version = "0.2.0"
+description = "Maimemo MCP protocol service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "maimemo>=0.2.0,<0.3",
+  "mcp>=2,<3",
+  "anyio>=4,<5",
+  "httpx>=0.28,<1",
+  "pydantic>=2,<3",
+  "pyyaml>=6,<7",
+  "sqlalchemy[asyncio]>=2,<3",
+  "starlette>=1,<2",
+  "uvicorn>=0.54,<1",
+]
+
+[project.scripts]
+maimemo-mcp = "maimemo_mcp.runtime:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maimemo_mcp"]

@@ -8,8 +8,7 @@ from time import perf_counter
 
 import pytest
 import yaml
-
-from maimemo_mcp import openapi_drift as drift
+from maimemo import openapi_drift as drift
 
 compare_openapi = drift.compare_openapi
 

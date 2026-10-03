@@ -17,8 +17,13 @@ from typing import NoReturn, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-IMAGE = "ghcr.io/huang-jiping/maimemo-mcp"
-REPOSITORY = "huang-jiping/maimemo-mcp"
+ALLOWED_IMAGES = frozenset(
+    {
+        "ghcr.io/huang-jiping/maimemo-server",
+        "ghcr.io/huang-jiping/maimemo-mcp",
+        "ghcr.io/huang-jiping/maimemo-worker",
+    }
+)
 ACCEPT = ", ".join((
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.oci.image.manifest.v1+json",
@@ -47,6 +52,34 @@ def validate_digest(digest: str) -> str:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise ReleaseError("image digest is invalid")
     return digest
+
+
+def validate_image(image: str) -> str:
+    if image not in ALLOWED_IMAGES:
+        raise ReleaseError("release image is invalid")
+    return image
+
+
+def validate_version_alias(alias: str) -> str:
+    validate_tag(f"v{alias}")
+    return alias
+
+
+def require_project_version(
+    tag: str,
+    project: Path = Path("packages/maimemo/pyproject.toml"),
+) -> None:
+    validate_tag(tag)
+    try:
+        version = next(
+            line.split('"', 2)[1]
+            for line in project.read_text(encoding="utf-8").splitlines()
+            if line.startswith("version = ")
+        )
+    except (OSError, IndexError, StopIteration):
+        raise ReleaseError("project version lookup failed") from None
+    if tag != f"v{version}":
+        raise ReleaseError("release tag does not match project version")
 
 
 def require_master_ancestry(commit: str, *, cwd: Path | None = None) -> None:
@@ -89,7 +122,7 @@ def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> s
     validate_digest(digest)
     if registry.digest(digest) != digest:
         raise ReleaseError("image digest verification failed")
-    aliases = (tag, f"sha-{commit}")
+    aliases = (tag.removeprefix("v"), f"sha-{commit}")
     # Check BOTH immutable names before writing either of them.
     missing = [validate_immutable(registry.digest(alias), digest) for alias in aliases]
     for alias, create in zip(aliases, missing, strict=True):
@@ -97,6 +130,16 @@ def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> s
             registry.tag(alias, digest)
     if any(registry.digest(alias) != digest for alias in aliases):
         raise ReleaseError("image digest verification failed")
+    return digest
+
+
+def promote_stable(registry: Registry, tag: str, digest: str) -> str:
+    """Promote one already verified immutable release after NAS acceptance."""
+    validate_tag(tag)
+    validate_digest(digest)
+    version_alias = tag.removeprefix("v")
+    if registry.digest(version_alias) != digest:
+        raise ReleaseError("immutable image tag conflicts")
     stable_digest = registry.digest("stable")
     if stable_digest is not None:
         validate_digest(stable_digest)
@@ -107,7 +150,7 @@ def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> s
             validate_tag(stable_version)
         except ReleaseError:
             raise ReleaseError("stable version metadata is invalid") from None
-        if registry.digest(stable_version) != stable_digest:
+        if registry.digest(stable_version.removeprefix("v")) != stable_digest:
             raise ReleaseError("stable image verification failed")
         # Canonical digit strings compare numerically by length then lexical value.
         # This also avoids Python's maximum int-string length for large versions.
@@ -129,12 +172,14 @@ def publish_release(registry: Registry, tag: str, commit: str, digest: str) -> s
 class GhcrRegistry:
     """Read aliases using Registry V2; copy existing manifests with Docker Buildx."""
 
-    def __init__(self, actor: str, credential: str) -> None:
+    def __init__(self, image: str, actor: str, credential: str) -> None:
+        self.image = validate_image(image)
+        self.repository = image.removeprefix("ghcr.io/")
         if not actor or not credential:
             raise ReleaseError("registry authentication failed")
         basic = base64.b64encode(f"{actor}:{credential}".encode()).decode("ascii")
         request = Request(
-            f"https://ghcr.io/token?service=ghcr.io&scope=repository:{REPOSITORY}:pull",
+            f"https://ghcr.io/token?service=ghcr.io&scope=repository:{self.repository}:pull",
             headers={"Authorization": f"Basic {basic}"},
         )
         try:
@@ -155,9 +200,9 @@ class GhcrRegistry:
         elif reference.startswith("sha-"):
             validate_commit(reference[4:])
         elif reference != "stable":
-            validate_tag(reference)
+            validate_version_alias(reference)
         request = Request(
-            f"https://ghcr.io/v2/{REPOSITORY}/manifests/{reference}", method="HEAD",
+            f"https://ghcr.io/v2/{self.repository}/manifests/{reference}", method="HEAD",
             headers={"Accept": ACCEPT, "Authorization": self._authorization},
         )
         try:
@@ -179,11 +224,11 @@ class GhcrRegistry:
         if reference.startswith("sha-"):
             validate_commit(reference[4:])
         elif reference != "stable":
-            validate_tag(reference)
+            validate_version_alias(reference)
         try:
             result = subprocess.run(
                 ["docker", "buildx", "imagetools", "create", "--prefer-index=false",
-                 "--tag", f"{IMAGE}:{reference}", f"{IMAGE}@{digest}"],
+                 "--tag", f"{self.image}:{reference}", f"{self.image}@{digest}"],
                 timeout=120, capture_output=True, check=False,
             )
         except (OSError, subprocess.SubprocessError):
@@ -197,7 +242,7 @@ class GhcrRegistry:
         try:
             result = subprocess.run(
                 ["docker", "buildx", "imagetools", "inspect", "--format",
-                 "{{json .Image}}", f"{IMAGE}@{digest}"],
+                 "{{json .Image}}", f"{self.image}@{digest}"],
                 capture_output=True, timeout=120, check=False,
             )
             if result.returncode != 0:
@@ -223,26 +268,34 @@ class SafeParser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     parser = SafeParser(description=__doc__)
-    parser.add_argument("mode", choices=("preflight", "publish"))
+    parser.add_argument("mode", choices=("preflight", "publish", "promote-stable"))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--digest")
+    parser.add_argument("--image")
     try:
         args = parser.parse_args(argv)
         validate_tag(args.tag)
         validate_commit(args.commit)
         require_master_ancestry(args.commit)
-        if args.mode == "publish":
+        require_project_version(args.tag)
+        if args.mode in {"publish", "promote-stable"}:
             if args.digest is None:
                 raise ReleaseError("image digest is invalid")
+            if args.image is None:
+                raise ReleaseError("release image is invalid")
             validate_digest(args.digest)
-            registry = GhcrRegistry(os.environ.get("GITHUB_ACTOR", ""),
-                                    os.environ.get("GITHUB_TOKEN", ""))
-            digest = publish_release(registry, args.tag, args.commit, args.digest)
-            if digest != args.digest:
-                print("immutable release verified; newer stable preserved")
+            registry = GhcrRegistry(
+                args.image,
+                os.environ.get("GITHUB_ACTOR", ""),
+                os.environ.get("GITHUB_TOKEN", ""),
+            )
+            if args.mode == "publish":
+                digest = publish_release(registry, args.tag, args.commit, args.digest)
+                print(f"immutable release verified {digest}")
             else:
-                print(f"released {args.tag} sha-{args.commit} stable {digest}")
+                digest = promote_stable(registry, args.tag, args.digest)
+                print(f"stable promoted {digest}")
     except ReleaseError as error:
         print(str(error), file=sys.stderr)
         return 1

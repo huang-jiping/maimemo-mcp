@@ -1,9 +1,70 @@
 from pathlib import Path
 
 import pytest
+from maimemo.config import (
+    AnalysisIntervals,
+    CoreSettings,
+    DatabaseSettings,
+    UpstreamCredentialSettings,
+)
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_server.config import MigrationSettings
+from maimemo_worker.config import WorkerSettings
 from pydantic import SecretStr, ValidationError
 
-from maimemo_mcp.config import Settings
+
+def minimal_database_environment() -> dict[str, str]:
+    return {"MAIMEMO_DATABASE_URL": "postgresql+psycopg://localhost/maimemo_test"}
+
+
+def test_core_settings_do_not_define_module_ports_or_intervals() -> None:
+    assert set(CoreSettings.model_fields) == {"database", "timezone", "log_level"}
+
+
+def test_core_settings_load_without_upstream_credentials() -> None:
+    settings = CoreSettings.load(minimal_database_environment())
+
+    assert isinstance(settings.database, DatabaseSettings)
+    assert settings.database.database_url.startswith("postgresql+psycopg://")
+
+
+def test_upstream_credentials_are_loaded_only_when_requested(tmp_path: Path) -> None:
+    environment = {
+        "MAIMEMO_TOKEN_FILE": str(tmp_path / "token"),
+        "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(tmp_path / "key"),
+    }
+
+    credentials = UpstreamCredentialSettings.load(environment)
+
+    assert credentials.token_file == tmp_path / "token"
+    assert credentials.token_fingerprint_key_file == tmp_path / "key"
+
+
+def test_analysis_intervals_have_worker_defaults() -> None:
+    intervals = AnalysisIntervals.load({})
+
+    assert intervals.today_interval_minutes == 30
+    assert intervals.records_interval_minutes == 120
+
+
+def test_worker_settings_do_not_require_mcp_environment(environ: dict[str, str]) -> None:
+    settings = WorkerSettings.load(environ)
+
+    assert settings.intervals.today_interval_minutes == 30
+    assert settings.intervals.records_interval_minutes == 120
+    assert settings.core.database.database_url == environ["MAIMEMO_DATABASE_URL"]
+
+
+def test_core_database_error_does_not_retain_secret() -> None:
+    import traceback
+
+    private_url = "postgresql+psycopg://u:prefix@host:CORE_SECRET@localhost/d"
+    with pytest.raises(ValidationError) as caught:
+        CoreSettings.load({"MAIMEMO_DATABASE_URL": private_url})
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "CORE_SECRET" not in formatted
+    assert private_url not in formatted
 
 
 @pytest.fixture
@@ -122,7 +183,7 @@ def test_database_url_query_is_fail_closed_without_retaining_values(
 
 def test_database_url_allows_bounded_sslmode(environ: dict[str, str]) -> None:
     environ["MAIMEMO_DATABASE_URL"] += "?sslmode=require"
-    assert Settings.load(environ).database_url.endswith("?sslmode=require")
+    assert Settings.load(environ).core.database.database_url.endswith("?sslmode=require")
 
 
 @pytest.mark.parametrize("private_url", [
@@ -172,7 +233,7 @@ def test_raw_database_url_accepts_encoded_password_ipv6_and_sslmode(
         "postgresql+psycopg://u:p%40ss%3Aword%2Fpercent%25@[::1]:5432/d"
         f"?sslmode={sslmode}"
     )
-    assert Settings.load(environ).database_url == environ["MAIMEMO_DATABASE_URL"]
+    assert Settings.load(environ).core.database.database_url == environ["MAIMEMO_DATABASE_URL"]
 
 
 @pytest.mark.parametrize("url", [
@@ -183,12 +244,12 @@ def test_raw_database_url_accepts_safe_host_without_userinfo_or_database(
     environ: dict[str, str], url: str,
 ) -> None:
     environ["MAIMEMO_DATABASE_URL"] = url
-    assert Settings.load(environ).database_url == url
+    assert Settings.load(environ).core.database.database_url == url
 
 
 def test_read_maimemo_token_strips_trailing_newline(environ: dict[str, str]) -> None:
     Path(environ["MAIMEMO_TOKEN_FILE"]).write_text("synthetic-token\r\n", encoding="utf-8")
-    token = Settings.load(environ).read_maimemo_token()
+    token = Settings.load(environ).upstream.read_maimemo_token()
     assert isinstance(token, SecretStr)
     assert token.get_secret_value() == "synthetic-token"
 
@@ -197,7 +258,10 @@ def test_read_token_fingerprint_key(environ: dict[str, str]) -> None:
     Path(environ["MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE"]).write_text(
         "synthetic-key\n", encoding="utf-8"
     )
-    assert Settings.load(environ).read_token_fingerprint_key().get_secret_value() == "synthetic-key"
+    assert (
+        Settings.load(environ).upstream.read_token_fingerprint_key().get_secret_value()
+        == "synthetic-key"
+    )
 
 
 def test_secret_is_absent_from_settings_repr(environ: dict[str, str]) -> None:
@@ -206,13 +270,13 @@ def test_secret_is_absent_from_settings_repr(environ: dict[str, str]) -> None:
     settings = Settings.load(environ)
     assert "synthetic-password" not in repr(settings)
     assert "synthetic-token" not in repr(settings)
-    assert "synthetic-token" not in repr(settings.read_maimemo_token())
+    assert "synthetic-token" not in repr(settings.upstream.read_maimemo_token())
 
 
 def test_load_does_not_read_secret_files(environ: dict[str, str]) -> None:
     settings = Settings.load(environ)
     with pytest.raises(FileNotFoundError):
-        settings.read_maimemo_token()
+        settings.upstream.read_maimemo_token()
 
 
 @pytest.mark.parametrize("field", ["MAIMEMO_DATABASE_URL", "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE"])
@@ -224,40 +288,65 @@ def test_required_configuration(environ: dict[str, str], field: str) -> None:
 
 def test_default_schedule_and_timezone(environ: dict[str, str]) -> None:
     settings = Settings.load(environ)
-    assert settings.timezone.key == "Asia/Shanghai"
-    assert settings.mcp_host == "0.0.0.0"
-    assert settings.mcp_port == 8000
-    assert settings.mcp_allowed_hosts == ()
-    assert settings.today_interval_minutes == 30
-    assert settings.records_interval_minutes == 120
-    assert settings.log_level == "INFO"
-    assert settings.openapi_drift_state_file == Path("var/openapi-drift.json")
+    assert settings.core.timezone.key == "Asia/Shanghai"
+    assert settings.host == "0.0.0.0"
+    assert settings.port == 8000
+    assert settings.allowed_hosts == ()
+    assert settings.core.log_level == "INFO"
+    assert settings.drift_state_file == Path("var/openapi-drift.json")
 
 
 def test_startup_timeout_defaults(environ: dict[str, str]) -> None:
-    settings = Settings.load(environ)
-    assert settings.database_connect_timeout_seconds == 10
-    assert settings.migration_lock_timeout_seconds == 30
-    assert settings.migration_statement_timeout_seconds == 300
-    assert settings.schema_wait_timeout_seconds == 60
+    assert Settings.load(environ).core.database.connect_timeout_seconds == 10
+    migration = MigrationSettings.load(environ)
+    assert migration.lock_timeout_seconds == 30
+    assert migration.statement_timeout_seconds == 300
+    assert WorkerSettings.load(environ).schema_wait_timeout_seconds == 60
 
 
-@pytest.mark.parametrize(("field", "maximum"), [
-    ("database_connect_timeout_seconds", 60),
-    ("migration_lock_timeout_seconds", 300),
-    ("migration_statement_timeout_seconds", 3600),
-    ("schema_wait_timeout_seconds", 600),
-])
+@pytest.mark.parametrize(
+    ("environment_name", "loader", "path", "maximum"),
+    [
+        (
+            "MAIMEMO_DATABASE_CONNECT_TIMEOUT_SECONDS",
+            Settings.load,
+            lambda value: value.core.database.connect_timeout_seconds,
+            60,
+        ),
+        (
+            "MAIMEMO_MIGRATION_LOCK_TIMEOUT_SECONDS",
+            MigrationSettings.load,
+            lambda value: value.lock_timeout_seconds,
+            300,
+        ),
+        (
+            "MAIMEMO_MIGRATION_STATEMENT_TIMEOUT_SECONDS",
+            MigrationSettings.load,
+            lambda value: value.statement_timeout_seconds,
+            3600,
+        ),
+        (
+            "MAIMEMO_SCHEMA_WAIT_TIMEOUT_SECONDS",
+            WorkerSettings.load,
+            lambda value: value.schema_wait_timeout_seconds,
+            600,
+        ),
+    ],
+)
 def test_startup_timeouts_have_positive_bounded_environment_values(
-    environ: dict[str, str], field: str, maximum: int,
+    environ: dict[str, str],
+    environment_name: str,
+    loader: object,
+    path: object,
+    maximum: int,
 ) -> None:
     for value in (0, -1, maximum + 1):
-        environ[f"MAIMEMO_{field.upper()}"] = str(value)
+        environ[environment_name] = str(value)
         with pytest.raises(ValidationError):
-            Settings.load(environ)
+            loader(environ)  # type: ignore[operator]
     for value in (1, maximum):
-        environ[f"MAIMEMO_{field.upper()}"] = str(value)
-        assert getattr(Settings.load(environ), field) == value
+        environ[environment_name] = str(value)
+        assert path(loader(environ)) == value  # type: ignore[operator]
 
 
 def test_unreadable_secret_error_does_not_retain_private_path(
@@ -270,7 +359,7 @@ def test_unreadable_secret_error_does_not_retain_private_path(
 
     monkeypatch.setattr(Path, "read_text", denied)
     with pytest.raises(OSError) as caught:
-        Settings.load(environ).read_maimemo_token()
+        Settings.load(environ).upstream.read_maimemo_token()
     assert "SYNTHETIC_PATH_PASSWORD" not in "".join(traceback.format_exception(caught.value))
     assert caught.value.__context__ is None
 
@@ -281,20 +370,16 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
         "MAIMEMO_MCP_HOST": "127.0.0.1",
         "MAIMEMO_MCP_PORT": "9000",
         "MAIMEMO_MCP_ALLOWED_HOSTS": "maimemo-mcp, tunnel-sidecar",
-        "MAIMEMO_TODAY_INTERVAL_MINUTES": "15",
-        "MAIMEMO_RECORDS_INTERVAL_MINUTES": "60",
         "MAIMEMO_LOG_LEVEL": "DEBUG",
         "MAIMEMO_OPENAPI_DRIFT_STATE_FILE": "runtime/drift.json",
     })
     settings = Settings.load(environ)
-    assert settings.timezone.key == "UTC"
-    assert settings.mcp_host == "127.0.0.1"
-    assert settings.mcp_port == 9000
-    assert settings.mcp_allowed_hosts == ("maimemo-mcp", "tunnel-sidecar")
-    assert settings.today_interval_minutes == 15
-    assert settings.records_interval_minutes == 60
-    assert settings.log_level == "DEBUG"
-    assert settings.openapi_drift_state_file == Path("runtime/drift.json")
+    assert settings.core.timezone.key == "UTC"
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 9000
+    assert settings.allowed_hosts == ("maimemo-mcp", "tunnel-sidecar")
+    assert settings.core.log_level == "DEBUG"
+    assert settings.drift_state_file == Path("runtime/drift.json")
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -305,8 +390,6 @@ def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     ("MAIMEMO_MCP_PORT", "65536"),
     ("MAIMEMO_MCP_ALLOWED_HOSTS", "maimemo-mcp,*.internal"),
     ("MAIMEMO_MCP_ALLOWED_HOSTS", "maimemo-mcp:8000"),
-    ("MAIMEMO_TODAY_INTERVAL_MINUTES", "0"),
-    ("MAIMEMO_RECORDS_INTERVAL_MINUTES", "-1"),
     ("MAIMEMO_LOG_LEVEL", "invalid"),
     ("MAIMEMO_OPENAPI_DRIFT_STATE_FILE", ""),
 ])
@@ -316,11 +399,23 @@ def test_invalid_configuration(environ: dict[str, str], field: str, value: str) 
         Settings.load(environ)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("MAIMEMO_TODAY_INTERVAL_MINUTES", "0"),
+        ("MAIMEMO_RECORDS_INTERVAL_MINUTES", "-1"),
+    ],
+)
+def test_invalid_analysis_interval_configuration(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        AnalysisIntervals.load({field: value})
+
+
 @pytest.mark.parametrize("content", ["", "\n", " \r\n"])
 def test_empty_secret_file_is_rejected(environ: dict[str, str], content: str) -> None:
     Path(environ["MAIMEMO_TOKEN_FILE"]).write_text(content, encoding="utf-8")
     with pytest.raises(ValueError):
-        Settings.load(environ).read_maimemo_token()
+        Settings.load(environ).upstream.read_maimemo_token()
 
 
 def test_load_reads_process_environment(
@@ -328,7 +423,7 @@ def test_load_reads_process_environment(
 ) -> None:
     for name, value in environ.items():
         monkeypatch.setenv(name, value)
-    assert Settings.load().token_file == Path(environ["MAIMEMO_TOKEN_FILE"])
+    assert Settings.load().upstream.token_file == Path(environ["MAIMEMO_TOKEN_FILE"])
 
 
 @pytest.mark.parametrize(("field", "reader", "secret"), [
@@ -342,7 +437,7 @@ def test_invalid_utf8_secret_file_raises_redacted_error(
     settings = Settings.load(environ)
 
     with pytest.raises(ValueError) as caught:
-        getattr(settings, reader)()
+        getattr(settings.upstream, reader)()
 
     error = caught.value
     assert secret not in repr(error)

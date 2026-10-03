@@ -4,8 +4,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
-
-from maimemo_mcp.storage.schema import (
+from maimemo.storage.schema import (
     SchemaDefinitionError,
     SchemaState,
     SchemaStatus,

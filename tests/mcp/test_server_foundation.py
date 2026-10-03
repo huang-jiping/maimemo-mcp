@@ -11,14 +11,13 @@ import anyio
 import httpx
 import httpx2
 import pytest
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.envelopes import Completeness, ToolEnvelope, ToolMeta
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client, ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
-from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
 
 
 @pytest.fixture
@@ -27,10 +26,14 @@ def settings(tmp_path: Path) -> Settings:
     key = tmp_path / "fingerprint-key"
     token.write_text("test-token-only", encoding="utf-8")
     key.write_text("test-key-only", encoding="utf-8")
-    return Settings(
-        database_url="postgresql+psycopg://test_only:test_only@127.0.0.1:1/mcp_test",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": (
+                "postgresql+psycopg://test_only:test_only@127.0.0.1:1/mcp_test"
+            ),
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
 
 
@@ -137,6 +140,7 @@ async def test_standard_streamable_http_client_and_routes(
             assert response.headers["content-type"].startswith("application/json")
             assert "mcp-session-id" not in response.headers
             assert response.json()["result"]["serverInfo"]["name"] == "maimemo-mcp"
+            assert response.json()["result"]["serverInfo"]["version"] == "0.2.0"
             for path in ("/", "/mcp/tools", "/health", "/health/ready/"):
                 missing = await http_client.get(path)
                 assert missing.status_code == 404
@@ -182,7 +186,7 @@ async def test_internal_host_requires_explicit_exact_allowlist(
             )
             assert denied.status_code == 421
 
-    configured = settings.model_copy(update={"mcp_allowed_hosts": ("maimemo-mcp",)})
+    configured = settings.model_copy(update={"allowed_hosts": ("maimemo-mcp",)})
     configured_server = create_mcp_app(configured)
     async with configured_server.asgi_app.router.lifespan_context(configured_server.asgi_app):
         async with httpx2.AsyncClient(
@@ -339,7 +343,7 @@ async def test_lifespan_closes_owned_resources_once(
     monkeypatch.setattr(AsyncEngine, "dispose", dispose)
     monkeypatch.setattr(httpx.AsyncClient, "aclose", close)
     if failure == "startup":
-        settings.token_fingerprint_key_file.unlink()
+        settings.upstream.token_fingerprint_key_file.unlink()
     server = create_mcp_app(settings)
     assert (dispose_calls, close_calls) == (0, 0)
     resources = None
@@ -364,8 +368,8 @@ def test_app_construction_does_not_read_secret_files_or_open_connections(
     settings: Settings,
 ) -> None:
     # Construction must remain inert so importing/configuring the app has no I/O.
-    settings.token_file.unlink()
-    settings.token_fingerprint_key_file.unlink()
+    settings.upstream.token_file.unlink()
+    settings.upstream.token_fingerprint_key_file.unlink()
     server = create_mcp_app(settings)
     assert server.dependencies is None
 

@@ -7,8 +7,7 @@ import sys
 from pathlib import Path
 
 from _postgres_cli import PostgresTools, database_url_from_env, resolved_new_dump_path
-
-from maimemo_mcp.database_url import DatabaseUrlError
+from maimemo.database_url import DatabaseUrlError
 
 
 def parser() -> argparse.ArgumentParser:

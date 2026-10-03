@@ -5,25 +5,24 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import SecretStr
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-
-from maimemo_mcp.ingestion.service import StudyIngestionService, StudyRecordWindowPlanner
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     StudyProgressResponse,
     StudyRecordsResponse,
     TodayItemsResponse,
 )
-from maimemo_mcp.maimemo_client.study import StudyClient, StudyRecordsRequest, TodayItemsRequest
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
-from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
-from maimemo_mcp.storage.models.learning import (
+from maimemo.api_client.study import StudyClient, StudyRecordsRequest, TodayItemsRequest
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.ingestion.service import StudyIngestionService, StudyRecordWindowPlanner
+from maimemo.storage.models.ingestion import ApiSnapshot, IngestionRun
+from maimemo.storage.models.learning import (
     DailyProgress,
     DailyWordObservation,
     StudyRecordSnapshot,
     Vocabulary,
 )
+from pydantic import SecretStr
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 AT = datetime(2026, 10, 1, 16, 30, tzinfo=UTC)
 START = datetime(2026, 10, 1, 16, tzinfo=UTC)

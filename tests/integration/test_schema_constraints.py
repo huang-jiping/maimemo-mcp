@@ -1,7 +1,6 @@
 """Exercise persistence contracts against actual migrated PostgreSQL tables."""
 
 from datetime import date
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -96,20 +95,13 @@ async def test_session_factory_persists_and_reads_timezone_aware_data(
     postgres_url: str,
     database: AsyncEngine,
 ) -> None:
-    from maimemo_mcp.config import Settings
-    from maimemo_mcp.storage.database import (
-        create_async_engine_from_settings,
+    from maimemo.storage.database import (
+        create_async_engine,
         create_session_factory,
     )
-    from maimemo_mcp.storage.models.learning import Vocabulary
+    from maimemo.storage.models.learning import Vocabulary
 
-    engine = create_async_engine_from_settings(
-        Settings(
-            database_url=postgres_url,
-            token_file=Path("unused"),
-            token_fingerprint_key_file=Path("unused"),
-        )
-    )
+    engine = create_async_engine(postgres_url)
     try:
         factory = create_session_factory(engine)
         async with factory.begin() as session:
@@ -129,14 +121,13 @@ async def test_session_factory_persists_and_reads_timezone_aware_data(
 async def test_unknown_upstream_states_and_missing_tags_remain_representable(
     database: AsyncEngine,
 ) -> None:
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-
-    from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
-    from maimemo_mcp.storage.models.learning import (
+    from maimemo.storage.models.ingestion import ApiSnapshot, IngestionRun
+    from maimemo.storage.models.learning import (
         DailyWordObservation,
         StudyRecordSnapshot,
         Vocabulary,
     )
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     factory = async_sessionmaker(database, expire_on_commit=False)
     async with factory.begin() as session:

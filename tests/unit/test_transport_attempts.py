@@ -4,10 +4,9 @@ import asyncio
 
 import httpx
 import pytest
+from maimemo.api_client.errors import UpstreamUnavailableError
+from maimemo.api_client.transport import MaimemoTransport, observe_http_attempts
 from pydantic import BaseModel, SecretStr
-
-from maimemo_mcp.maimemo_client.errors import UpstreamUnavailableError
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport, observe_http_attempts
 
 
 class Response(BaseModel):

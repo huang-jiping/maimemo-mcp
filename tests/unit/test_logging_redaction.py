@@ -13,16 +13,15 @@ from typing import Any
 
 import httpx
 import pytest
+from maimemo.api_client.errors import UpstreamSchemaError, UpstreamUnavailableError
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.ingestion.service import IngestionResult
+from maimemo.logging import SafeJsonFormatter, configure_logging, log_event
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.health import health_routes, operational_health
+from maimemo_worker.worker import Worker
 from pydantic import BaseModel, SecretStr
 from starlette.applications import Starlette
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.service import IngestionResult
-from maimemo_mcp.ingestion.worker import Worker
-from maimemo_mcp.logging import SafeJsonFormatter, configure_logging, log_event
-from maimemo_mcp.maimemo_client.errors import UpstreamSchemaError, UpstreamUnavailableError
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
-from maimemo_mcp.mcp_server.health import health_routes, operational_health
 
 SECRET = "token-value-ABC123"
 
@@ -65,10 +64,12 @@ def settings(tmp_path: Path) -> Settings:
     key = tmp_path / "key"
     token.write_text(SECRET, encoding="utf-8")
     key.write_text("fingerprint-key-secret", encoding="utf-8")
-    return Settings(
-        database_url="postgresql+psycopg://user:password@localhost/db",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    return Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": "postgresql+psycopg://user:password@localhost/db",
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
 
 
@@ -126,7 +127,7 @@ def test_configure_logging_does_not_render_secret_paths_or_values(tmp_path: Path
     original_handlers = root.handlers[:]
     original_level = root.level
     try:
-        configure_logging(app_settings)
+        configure_logging(app_settings.core.log_level)
         assert root.level == logging.INFO
         assert len(root.handlers) == 1
         assert isinstance(root.handlers[0].formatter, SafeJsonFormatter)
@@ -224,7 +225,7 @@ class FakeSchemaEngine:
 
 async def test_operational_health_has_safe_required_fields(monkeypatch: Any) -> None:
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash",
+        "maimemo_mcp.health.pinned_schema_hash",
         lambda: "a" * 64,
     )
     dependencies = SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine())
@@ -298,7 +299,7 @@ async def test_operational_health_reads_fresh_persisted_drift_status(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
@@ -327,7 +328,7 @@ async def test_operational_health_marks_old_or_mismatched_drift_state_stale(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
@@ -347,7 +348,7 @@ async def test_malformed_drift_state_is_bounded_and_cannot_leak(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "maimemo_mcp.mcp_server.health.pinned_schema_hash", lambda: "a" * 64
+        "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
         SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
@@ -370,7 +371,7 @@ async def test_transport_logs_each_retry_and_limiter_wait_with_fixed_endpoint() 
             return httpx.Response(429, headers={"Retry-After": "0"}, text=SECRET)
         return httpx.Response(200, json={"value": 1, "private": SECRET})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),
@@ -420,7 +421,7 @@ async def test_transport_logs_safe_controlled_error_classes(
             raise httpx.ReadTimeout(f"Bearer {SECRET}", request=request)
         return httpx.Response(200, json={"value": SECRET, "personal": "private-word"})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),
@@ -451,7 +452,7 @@ async def test_concurrent_transport_contexts_keep_trace_ids_isolated() -> None:
         await asyncio.sleep(0)
         return httpx.Response(200, json={"value": 1})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),
@@ -491,7 +492,7 @@ async def test_worker_logs_absorbed_collection_failure_category(
 
     monkeypatch.setattr(worker, "_run_job", failed)
     job = SimpleNamespace(identity="today")
-    with captured_safe_logs("maimemo_mcp.ingestion.worker") as output:
+    with captured_safe_logs("maimemo_worker.worker") as output:
         result = await worker.run_job(job, datetime.now(UTC))
     assert result.status == "failed"
     record = json.loads(output.getvalue())

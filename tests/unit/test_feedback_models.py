@@ -1,13 +1,12 @@
 """Feedback inputs reject inferred facts and preserve the user's spelling/direction."""
 
 import pytest
-from pydantic import ValidationError
-
-from maimemo_mcp.feedback.models import (
+from maimemo.feedback.models import (
     FeedbackQuery,
     RecordFeedbackCommand,
     RetractFeedbackCommand,
 )
+from pydantic import ValidationError
 
 
 def command(**changes: object) -> RecordFeedbackCommand:

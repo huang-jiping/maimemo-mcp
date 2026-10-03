@@ -8,10 +8,9 @@ from typing import Any
 
 import pytest
 import yaml
+from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_mcp.server import create_mcp_app
 from mcp.client import Client
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.mcp_server.app import create_mcp_app
 
 ROOT = Path(__file__).parents[2]
 CORPUS = Path(__file__).with_name("prompts.yaml")
@@ -125,10 +124,14 @@ async def test_live_registry_has_exactly_17_atomic_reads_and_no_upstream_write(
     key = tmp_path / "key"
     token.write_text("evaluation-fake-token", encoding="utf-8")
     key.write_text("evaluation-fake-key", encoding="utf-8")
-    settings = Settings(
-        database_url="postgresql+psycopg://evaluation:evaluation@127.0.0.1:1/evaluation",
-        token_file=token,
-        token_fingerprint_key_file=key,
+    settings = Settings.load(
+        {
+            "MAIMEMO_DATABASE_URL": (
+                "postgresql+psycopg://evaluation:evaluation@127.0.0.1:1/evaluation"
+            ),
+            "MAIMEMO_TOKEN_FILE": str(token),
+            "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(key),
+        }
     )
     async with Client(create_mcp_app(settings).sdk) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
@@ -171,7 +174,7 @@ async def test_smoke_output_never_contains_payload_or_error_text(
                 )
             raise RuntimeError("Bearer personal-token upstream-private-body")
 
-    monkeypatch.setattr(smoke, "Settings", FakeSettings)
+    monkeypatch.setattr(smoke, "MCPSettings", FakeSettings)
     monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
     monkeypatch.setattr(smoke, "Client", FakeClient)
     code = await smoke.run(
@@ -205,7 +208,7 @@ async def test_missing_account_identifier_is_prerequisite_without_tool_call(
             calls.append(name)
             raise AssertionError("missing identifier operation must not call MCP")
 
-    monkeypatch.setattr(smoke.Settings, "load", lambda: object())
+    monkeypatch.setattr(smoke.MCPSettings, "load", lambda: object())
     monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
     monkeypatch.setattr(smoke, "Client", FakeClient)
     code = await smoke.run(
@@ -247,7 +250,7 @@ async def test_provided_identifier_failures_are_fail_not_prerequisite(
                 content=[f"private {failure}"],
             )
 
-    monkeypatch.setattr(smoke.Settings, "load", lambda: object())
+    monkeypatch.setattr(smoke.MCPSettings, "load", lambda: object())
     monkeypatch.setattr(smoke, "create_mcp_app", lambda settings: SimpleNamespace(sdk=object()))
     monkeypatch.setattr(smoke, "Client", FakeClient)
     code = await smoke.run(

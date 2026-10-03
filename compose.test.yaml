@@ -1,4 +1,4 @@
-name: maimemo-learning-foundation-test
+name: maimemo-test
 services:
   postgres:
     image: postgres:15-alpine

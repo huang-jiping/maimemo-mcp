@@ -10,10 +10,9 @@ from pathlib import Path
 import httpx
 import pytest
 import yaml
-
-from maimemo_mcp import openapi_drift as drift
-from maimemo_mcp.ingestion.drift_monitor import OpenApiDriftMonitor
-from maimemo_mcp.logging import SafeJsonFormatter
+from maimemo import openapi_drift as drift
+from maimemo.logging import SafeJsonFormatter
+from maimemo_worker.drift_monitor import OpenApiDriftMonitor
 
 SPEC = b"openapi: 3.0.0\npaths: {}\n"
 NOW = datetime(2026, 10, 2, tzinfo=UTC)

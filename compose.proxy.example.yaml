@@ -1,0 +1,13 @@
+# Optional override used only after the reverse-proxy network name is confirmed.
+services:
+  server:
+    networks:
+      - maimemo-app
+      - maimemo-proxy
+    environment:
+      MAIMEMO_EXTERNAL_BASE_URL: ${MAIMEMO_EXTERNAL_BASE_URL:?Set the public HTTPS URL}
+
+networks:
+  maimemo-proxy:
+    external: true
+    name: ${MAIMEMO_PROXY_NETWORK:?Set the existing reverse-proxy network name}

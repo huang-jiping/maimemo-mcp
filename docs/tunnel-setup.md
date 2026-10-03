@@ -55,9 +55,10 @@ LAN 检查不能替代版本/回补门禁；任一检查失败均禁止连接 Tu
 http://127.0.0.1:8000/mcp
 ```
 
-本 NAS 方案固定使用受监督的原生 Tunnel Client，连接上述主机回环地址。
-Compose 另外通过 `MAIMEMO_MCP_ALLOWED_HOSTS=maimemo-mcp` 精确放行服务名；
-不要改成通配符，也不要顺带加入其他内部域名。
+若 Tunnel Client 受监督地运行在同一 Compose 网络，可改用
+`http://mcp:8000/mcp`。基础 Compose 仅通过
+`MAIMEMO_MCP_ALLOWED_HOSTS=mcp` 精确放行这个服务名；不要改成通配符，也不要把
+其他内部域名顺带加入。
 
 验证应用端点：
 

@@ -36,3 +36,22 @@ class ServerSettings(BaseModel):
         values: dict[str, object] = {"database": DatabaseSettings.load(source)}
         values.update({field: source[name] for field, name in names.items() if name in source})
         return cls.model_validate(values)
+
+
+class MigrationSettings(BaseModel):
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+
+    database: DatabaseSettings
+    lock_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    statement_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+
+    @classmethod
+    def load(cls, environ: Mapping[str, str] | None = None) -> Self:
+        source = os.environ if environ is None else environ
+        names = {
+            "lock_timeout_seconds": "MAIMEMO_MIGRATION_LOCK_TIMEOUT_SECONDS",
+            "statement_timeout_seconds": "MAIMEMO_MIGRATION_STATEMENT_TIMEOUT_SECONDS",
+        }
+        values: dict[str, object] = {"database": DatabaseSettings.load(source)}
+        values.update({field: source[name] for field, name in names.items() if name in source})
+        return cls.model_validate(values)

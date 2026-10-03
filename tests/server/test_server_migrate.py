@@ -13,9 +13,9 @@ def test_current_and_upgrade_head_use_only_database_url(
     monkeypatch.setenv("MAIMEMO_TOKEN_FILE", "must-not-be-read")
     monkeypatch.setattr(migrate.command, "current", lambda config: calls.append(("current", None)))
     monkeypatch.setattr(
-        migrate.command,
-        "upgrade",
-        lambda config, revision: calls.append(("upgrade", revision)),
+        migrate,
+        "run_upgrade",
+        lambda settings: calls.append(("upgrade", "head")),
     )
 
     assert migrate.main(["current"]) == 0

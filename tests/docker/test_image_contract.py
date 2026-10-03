@@ -87,5 +87,7 @@ def test_image_contains_only_its_runtime_package(
     assert result["found"][present] is True
     assert result["found"]["maimemo"] is True
     assert all(result["found"][name] is False for name in absent)
-    assert result["alembic"] is (target == "server")
-    assert result["migrations"] is (target == "server")
+    # Every runtime resolves the expected schema head from the shipped
+    # migration graph. Only the Server package exposes the migration command.
+    assert result["alembic"] is True
+    assert result["migrations"] is True

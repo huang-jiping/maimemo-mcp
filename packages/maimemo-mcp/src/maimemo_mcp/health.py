@@ -9,9 +9,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from maimemo.storage.base import SchemaMetadata
 from maimemo.storage.models.ingestion import IngestionRun
-from sqlalchemy import select, text
+from maimemo.storage.schema import (
+    SchemaDefinitionError,
+    SchemaNotReadyError,
+    SchemaStatus,
+    expected_schema_revision,
+    inspect_schema,
+    require_current_schema,
+)
+from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -25,9 +32,12 @@ _DRIFT_MAX_BYTES = 4096
 
 
 def pinned_schema_hash() -> str:
-    checksum = (
-        Path(__file__).resolve().parents[3] / "openapi" / "maimemo-api.sha256"
-    ).read_text(encoding="ascii").strip().split()[0]
+    candidates = (Path.cwd() / "openapi" / "maimemo-api.sha256",) + tuple(
+        parent / "openapi" / "maimemo-api.sha256"
+        for parent in Path(__file__).resolve().parents
+    )
+    checksum_file = next((path for path in candidates if path.is_file()), candidates[0])
+    checksum = checksum_file.read_text(encoding="ascii").strip().split()[0]
     if not _SHA256.fullmatch(checksum):
         raise ValueError("Pinned OpenAPI checksum is invalid")
     return checksum
@@ -94,6 +104,9 @@ async def operational_health(
     drift_state_file: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    schema = await inspect_schema(current.engine, expected_schema_revision())
+    if schema.status is SchemaStatus.UNAVAILABLE:
+        raise SchemaNotReadyError(unavailable=True)
     async with current.sessions() as session:
         runs = list(
             (
@@ -106,9 +119,6 @@ async def operational_health(
                     .order_by(IngestionRun.finished_at.desc())
                 )
             ).all()
-        )
-        revision = await session.scalar(
-            select(SchemaMetadata.schema_version).order_by(SchemaMetadata.installed_at.desc()).limit(1)
         )
     successful = [run for run in runs if run.status in ("complete", "partial")]
     failures: dict[str, int] = {}
@@ -130,7 +140,11 @@ async def operational_health(
         ),
         "consecutive_failures": failures,
         "schema_hash": schema_hash,
-        "database_migration_revision": revision,
+        "database_migration_revision": (
+            schema.metadata_revisions[0] if schema.status is SchemaStatus.CURRENT else None
+        ),
+        "expected_database_migration_revision": schema.expected_revision,
+        "database_schema_status": schema.status.value,
     }
     result.update(
         _drift_health(
@@ -159,8 +173,12 @@ def health_routes(
             reason = "http_client_closed"
         else:
             try:
-                async with asyncio.timeout(3.0), current.engine.connect() as connection:
-                    await connection.execute(text("SELECT 1"))
+                async with asyncio.timeout(3.0):
+                    await require_current_schema(current.engine, expected_schema_revision())
+            except SchemaDefinitionError:
+                reason = "schema_incompatible"
+            except SchemaNotReadyError as error:
+                reason = str(error)
             except Exception:
                 # Never send the driver exception, DB URL, credentials or learning rows.
                 reason = "database_unavailable"

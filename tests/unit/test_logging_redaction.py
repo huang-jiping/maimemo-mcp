@@ -180,15 +180,47 @@ class FakeSession:
             ]
         )
 
-    async def scalar(self, statement: Any) -> str:
-        assert "schema_metadata" in str(statement)
-        return "0003"
-
-
 class FakeSessions:
     @asynccontextmanager
     async def __call__(self) -> Any:
         yield FakeSession()
+
+
+class FakeSchemaResult:
+    def __init__(self, values: tuple[str, ...]) -> None:
+        self.values = values
+
+    def one(self) -> tuple[str, ...]:
+        return self.values
+
+    def scalars(self) -> "FakeSchemaResult":
+        return self
+
+    def all(self) -> tuple[str, ...]:
+        return self.values
+
+
+class FakeSchemaEngine:
+    def __init__(
+        self,
+        alembic: tuple[str, ...] = ("0004",),
+        metadata: tuple[str, ...] = ("0004",),
+    ) -> None:
+        self.alembic = alembic
+        self.metadata = metadata
+
+    @asynccontextmanager
+    async def connect(self) -> Any:
+        yield self
+
+    async def execute(self, statement: Any) -> FakeSchemaResult:
+        query = str(statement)
+        if "to_regclass" in query:
+            return FakeSchemaResult(("alembic_version", "schema_metadata"))
+        if "alembic_version" in query:
+            return FakeSchemaResult(self.alembic)
+        assert "schema_metadata" in query
+        return FakeSchemaResult(self.metadata)
 
 
 async def test_operational_health_has_safe_required_fields(monkeypatch: Any) -> None:
@@ -196,7 +228,7 @@ async def test_operational_health_has_safe_required_fields(monkeypatch: Any) -> 
         "maimemo_mcp.health.pinned_schema_hash",
         lambda: "a" * 64,
     )
-    dependencies = SimpleNamespace(sessions=FakeSessions())
+    dependencies = SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine())
     app = Starlette(routes=health_routes(lambda: dependencies))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://localhost"
@@ -210,11 +242,41 @@ async def test_operational_health_has_safe_required_fields(monkeypatch: Any) -> 
         "consecutive_failures": {"records": 0, "today": 1},
         "schema_hash": "a" * 64,
         "drift_status": "unavailable",
-        "database_migration_revision": "0003",
+        "database_migration_revision": "0004",
+        "expected_database_migration_revision": "0004",
+        "database_schema_status": "current",
     }
     rendered = response.text
     for forbidden in ("private", "payload", "Authorization", "Bearer", "password"):
         assert forbidden not in rendered
+
+
+@pytest.mark.parametrize(
+    ("alembic", "metadata"),
+    [
+        (("0003",), ("0003",)),
+        (("0004", "branch"), ("0004",)),
+        (("0004",), (f"postgresql://user:{SECRET}@db/private",)),
+    ],
+)
+async def test_operational_health_uses_gate_and_hides_incompatible_revision(
+    alembic: tuple[str, ...], metadata: tuple[str, ...]
+) -> None:
+    dependencies = SimpleNamespace(
+        sessions=FakeSessions(), engine=FakeSchemaEngine(alembic, metadata)
+    )
+    app = Starlette(routes=health_routes(lambda: dependencies))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost"
+    ) as client:
+        response = await client.get("/health/status")
+    assert response.status_code == 200
+    assert response.json()["database_schema_status"] == "incompatible"
+    assert response.json()["database_migration_revision"] is None
+    assert response.json()["expected_database_migration_revision"] == "0004"
+    assert response.json()["last_successful_collection"] == "2026-10-02T02:00:00Z"
+    for forbidden in (SECRET, "postgresql://", "private", "password", "Bearer"):
+        assert forbidden not in response.text
 
 
 @pytest.mark.parametrize("severity", ["none", "informational", "high"])
@@ -240,7 +302,7 @@ async def test_operational_health_reads_fresh_persisted_drift_status(
         "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
-        SimpleNamespace(sessions=FakeSessions()),
+        SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
         drift_state_file=state,
         now=checked_at + timedelta(hours=1),
     )
@@ -269,7 +331,7 @@ async def test_operational_health_marks_old_or_mismatched_drift_state_stale(
         "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
-        SimpleNamespace(sessions=FakeSessions()),
+        SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
         drift_state_file=state,
         now=datetime(2026, 10, 2, 3, tzinfo=UTC),
     )
@@ -289,7 +351,7 @@ async def test_malformed_drift_state_is_bounded_and_cannot_leak(
         "maimemo_mcp.health.pinned_schema_hash", lambda: "a" * 64
     )
     result = await operational_health(
-        SimpleNamespace(sessions=FakeSessions()),
+        SimpleNamespace(sessions=FakeSessions(), engine=FakeSchemaEngine()),
         drift_state_file=state,
         now=datetime(2026, 10, 2, tzinfo=UTC),
     )

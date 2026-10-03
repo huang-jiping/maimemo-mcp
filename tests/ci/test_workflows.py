@@ -42,7 +42,7 @@ def test_ci_runs_complete_validation_without_package_write_permission() -> None:
     event = triggers(workflow)
     commands = "\n".join(str(step.get("run", "")) for step in all_steps(workflow))
 
-    assert set(event) == {"pull_request", "push"}
+    assert set(event) == {"pull_request", "push", "workflow_call"}
     assert event["push"]["branches"] == ["master"]
     assert workflow["permissions"] == {"contents": "read"}
     assert "packages" not in workflow["permissions"]
@@ -68,9 +68,12 @@ def test_publish_is_gated_and_builds_exactly_three_images() -> None:
     publish = workflow["jobs"]["publish"]
     matrix = publish["strategy"]["matrix"]["include"]
 
-    assert set(event) == {"push", "workflow_dispatch"}
-    assert event["push"] == {"branches": ["master"], "tags": ["v*"]}
-    assert workflow["permissions"] == {"contents": "read", "packages": "write"}
+    assert set(event) == {"push"}
+    assert event["push"] == {"tags": ["v*"]}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["jobs"]["quality"] == {"uses": "./.github/workflows/ci.yml"}
+    assert publish["needs"] == "quality"
+    assert publish["permissions"] == {"contents": "read", "packages": "write"}
     assert matrix == [
         {"target": "server", "image": "ghcr.io/huang-jiping/maimemo-server"},
         {"target": "mcp", "image": "ghcr.io/huang-jiping/maimemo-mcp"},
@@ -78,11 +81,13 @@ def test_publish_is_gated_and_builds_exactly_three_images() -> None:
     ]
     commands = "\n".join(str(step.get("run", "")) for step in publish["steps"])
     rendered = "\n".join(str(step) for step in publish["steps"])
-    assert "sha-${GITHUB_SHA}" in commands
-    assert "${GITHUB_REF_NAME#v}" in commands
-    assert "latest" in commands
+    assert "validate_release.py publish" in commands
+    assert "validate_release.py preflight" in commands
     assert "stable" not in rendered
-    build_step = next(step for step in publish["steps"] if step["name"] == "Build and push")
+    build_step = next(
+        step for step in publish["steps"] if step["name"] == "Build and upload digest"
+    )
     assert build_step["with"]["push"] is True
     assert build_step["with"]["target"] == "${{ matrix.target }}"
+    assert "push-by-digest=true" in build_step["with"]["outputs"]
     assert_actions_are_immutable(workflow)

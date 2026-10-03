@@ -36,7 +36,10 @@ class UpstreamResources:
 
 @asynccontextmanager
 async def open_database(database: DatabaseSettings) -> AsyncIterator[DatabaseResources]:
-    engine = create_async_engine(database.database_url)
+    engine = create_async_engine(
+        database.database_url,
+        connect_timeout_seconds=database.connect_timeout_seconds,
+    )
     try:
         yield DatabaseResources(engine=engine, sessions=create_session_factory(engine))
     finally:

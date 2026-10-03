@@ -44,7 +44,10 @@ if context.is_offline_mode():
     with context.begin_transaction():
         context.run_migrations()
 else:
-    if sys.platform == "win32":
+    connection = context.config.attributes.get("connection")
+    if connection is not None:
+        run_migrations(connection)
+    elif sys.platform == "win32":
         asyncio.run(run_online(), loop_factory=asyncio.SelectorEventLoop)
     else:
         asyncio.run(run_online())

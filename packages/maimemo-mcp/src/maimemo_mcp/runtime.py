@@ -52,7 +52,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _report_configuration_error(exc)
         return 2
     try:
-        engine = create_async_engine(settings.core.database.database_url)
+        engine = create_async_engine(
+            settings.core.database.database_url,
+            connect_timeout_seconds=settings.core.database.connect_timeout_seconds,
+        )
         engine.sync_engine.dispose()
     except DatabaseUrlError:
         print("configuration_error database_url:invalid", file=sys.stderr)

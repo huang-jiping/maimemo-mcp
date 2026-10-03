@@ -29,7 +29,7 @@ for path in paths:
         pass
     else:
         raise RuntimeError('secret mount is writable')
-print(json.dumps({{'uid': os.getuid(), 'readable': len(paths), 'readonly': len(paths)}}))
+print(json.dumps({{'uid': os.getuid(), 'gid': os.getgid(), 'readable': 2, 'readonly': 2}}))
 """
 _ISOLATION_PROBE = f"""
 import json
@@ -37,7 +37,8 @@ import os
 from pathlib import Path
 
 paths = [Path(value) for value in {SECRET_PATHS!r}]
-print(json.dumps({{'uid': os.getuid(), 'visible': sum(path.exists() for path in paths)}}))
+print(json.dumps({{'uid': os.getuid(), 'gid': os.getgid(),
+                  'visible': sum(path.exists() for path in paths)}}))
 """
 
 
@@ -54,6 +55,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--server-image", default="maimemo-server:test")
     result.add_argument("--mcp-image", default="maimemo-mcp:test")
     result.add_argument("--worker-image", default="maimemo-worker:test")
+    result.add_argument("--compose-file", type=Path, default=COMPOSE_FILE)
     return result
 
 
@@ -64,13 +66,21 @@ def _resolve_file(path: Path, label: str) -> Path:
     return resolved
 
 
-def _probe(service: str, source: str, environment: dict[str, str]) -> dict[str, int]:
+def _probe(
+    compose: Path,
+    override: Path,
+    service: str,
+    source: str,
+    environment: dict[str, str],
+) -> dict[str, int]:
     completed = subprocess.run(
         [
             "docker",
             "compose",
             "-f",
-            str(COMPOSE_FILE),
+            str(compose),
+            "-f",
+            str(override),
             "run",
             "--rm",
             "--no-deps",
@@ -80,7 +90,7 @@ def _probe(service: str, source: str, environment: dict[str, str]) -> dict[str, 
             "-c",
             source,
         ],
-        cwd=ROOT,
+        cwd=compose.parent,
         env=environment,
         text=True,
         capture_output=True,
@@ -97,43 +107,77 @@ def _audit(
     server_image: str,
     mcp_image: str,
     worker_image: str,
+    compose_file: Path = COMPOSE_FILE,
 ) -> None:
     token = _resolve_file(token_file, "Token secret")
     key = _resolve_file(key_file, "Fingerprint key secret")
     if token == key:
         raise ValueError("Token and fingerprint key must use different files")
+    compose = _resolve_file(compose_file, "Compose file")
     project = f"maimemo-secret-audit-{uuid4().hex[:12]}"
     environment = dict(os.environ)
     environment.update(
         {
             "COMPOSE_PROJECT_NAME": project,
             "MAIMEMO_DATABASE_URL": "postgresql+psycopg://audit:unused@db.invalid/audit",
-            "MAIMEMO_SERVER_IMAGE": server_image,
-            "MAIMEMO_MCP_IMAGE": mcp_image,
-            "MAIMEMO_WORKER_IMAGE": worker_image,
-            "MAIMEMO_TOKEN_SECRET_FILE": str(token),
-            "MAIMEMO_TOKEN_FINGERPRINT_KEY_SECRET_FILE": str(key),
         }
     )
-    try:
-        for service in ("mcp", "worker"):
-            result = _probe(service, _UPSTREAM_PROBE, environment)
-            if result != {"uid": 10001, "readable": 2, "readonly": 2}:
-                raise RuntimeError("Upstream secret audit returned an unexpected result")
-        for service in ("server", "migrate"):
-            result = _probe(service, _ISOLATION_PROBE, environment)
-            if result != {"uid": 10001, "visible": 0}:
-                raise RuntimeError("Server secret isolation audit returned an unexpected result")
-    finally:
-        subprocess.run(
-            ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), "down"],
-            cwd=ROOT,
-            env=environment,
-            text=True,
-            capture_output=True,
-            shell=False,
-            check=False,
+    with tempfile.TemporaryDirectory(prefix="maimemo-secret-override-") as directory:
+        override = Path(directory) / "compose.override.json"
+        override.write_text(
+            json.dumps(
+                {
+                    "services": {
+                        "server": {"image": server_image},
+                        "migrate": {"image": server_image},
+                        "mcp": {"image": mcp_image},
+                        "worker": {"image": worker_image},
+                    },
+                    "secrets": {
+                        "maimemo_token": {"file": str(token)},
+                        "token_fingerprint_key": {"file": str(key)},
+                    },
+                }
+            ),
+            encoding="utf-8",
         )
+        try:
+            for service in ("mcp", "worker"):
+                result = _probe(compose, override, service, _UPSTREAM_PROBE, environment)
+                if result != {
+                    "uid": 10001,
+                    "gid": 10001,
+                    "readable": 2,
+                    "readonly": 2,
+                }:
+                    raise RuntimeError("Upstream secret audit returned an unexpected result")
+            for service in ("server", "migrate"):
+                result = _probe(compose, override, service, _ISOLATION_PROBE, environment)
+                if result != {"uid": 10001, "gid": 10001, "visible": 0}:
+                    raise RuntimeError(
+                        "Server secret isolation audit returned an unexpected result"
+                    )
+        finally:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-p",
+                    project,
+                    "-f",
+                    str(compose),
+                    "-f",
+                    str(override),
+                    "down",
+                    "--remove-orphans",
+                ],
+                cwd=compose.parent,
+                env=environment,
+                text=True,
+                capture_output=True,
+                shell=False,
+                check=False,
+            )
     print(json.dumps({"uid": 10001, "upstream_services": 2, "isolated_services": 2}))
 
 
@@ -143,6 +187,7 @@ def main() -> int:
         "server_image": args.server_image,
         "mcp_image": args.mcp_image,
         "worker_image": args.worker_image,
+        "compose_file": args.compose_file,
     }
     if args.synthetic:
         if args.fingerprint_key_file is not None:

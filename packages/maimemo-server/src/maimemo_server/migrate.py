@@ -8,8 +8,10 @@ from collections.abc import Sequence
 
 from alembic import command
 from alembic.config import Config
-from maimemo.config import DatabaseSettings
 from pydantic import ValidationError
+
+from maimemo_server.config import MigrationSettings
+from maimemo_server.migration_runner import MigrationError, run_upgrade
 
 
 def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -30,17 +32,21 @@ def _alembic_config(database_url: str) -> Config:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_arguments(argv)
     try:
-        database = DatabaseSettings.load()
+        settings = MigrationSettings.load()
     except ValidationError as exc:
         missing = any(error["type"] == "missing" for error in exc.errors())
         category = "missing" if missing else "invalid"
         print(f"configuration_error database_url:{category}", file=sys.stderr)
         return 2
-    config = _alembic_config(database.database_url)
+    config = _alembic_config(settings.database.database_url)
     if args.command == "current":
         command.current(config)
     else:
-        command.upgrade(config, "head")
+        try:
+            run_upgrade(settings)
+        except MigrationError as exc:
+            print(f"migration_error {exc}", file=sys.stderr)
+            return 1
     return 0
 
 

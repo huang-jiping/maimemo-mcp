@@ -23,7 +23,7 @@
 
 默认学习时区为 `Asia/Shanghai`，今日数据间隔为 30 分钟，学习记录间隔为 120 分钟。
 配置的两个采集间隔同时用于调度、健康新鲜度和评分证据质量，不需单独配置查询阈值。
-MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不要将端口映射到公网。
+MCP 容器内监听 `0.0.0.0:8000`；NAS 模板只发布主机回环地址 `127.0.0.1:8000`。
 时间处理接口要求输入带时区的 datetime，数据库时间采用 UTC。
 
 ## OpenAPI 基线
@@ -65,7 +65,14 @@ MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不�
 则只绑定 `127.0.0.1`。完整部署、迁移、密钥权限、备份恢复和 Tunnel 步骤见
 `docs/operations.md`、`docs/tunnel-setup.md` 与 `docs/migration/maimemo-0.2.0.md`。
 
+UGOS Pro 私有部署从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始：在 Docker → 项目中导入
+[NAS Compose](deploy/nas/compose.yaml)，项目名同样为 `maimemo`。NAS 模板使用三个经 digest
+固定的镜像和四个服务，Worker 每六小时检查一次 OpenAPI 漂移。部署前必须满足 Docker
+Engine 安全版本或厂商回补门禁，并从另一台 LAN 主机验证回环发布端口不可达。
+
 ## 只读真实接口冒烟
+
+以下源码脚本仅在保留源码与锁定依赖的开发工作站执行，不属于 NAS 项目的部署或运维流程。
 
 只有在用户明确提供 Token 文件并完成数据库配置后，才运行：
 

@@ -1,21 +1,15 @@
 """Semantic OpenAPI drift classification, independent of YAML presentation."""
 
-import importlib.util
-import sys
+import hashlib
+import json
 from pathlib import Path
 from textwrap import dedent, indent
-from typing import Any
+from time import perf_counter
 
 import pytest
+import yaml
+from maimemo import openapi_drift as drift
 
-_MODULE_SPEC = importlib.util.spec_from_file_location(
-    "maimemo_openapi_drift",
-    Path(__file__).parents[2] / "scripts" / "check_openapi_drift.py",
-)
-assert _MODULE_SPEC is not None and _MODULE_SPEC.loader is not None
-drift: Any = importlib.util.module_from_spec(_MODULE_SPEC)
-sys.modules[_MODULE_SPEC.name] = drift
-_MODULE_SPEC.loader.exec_module(drift)
 compare_openapi = drift.compare_openapi
 
 
@@ -333,7 +327,7 @@ def test_cli_atomically_persists_safe_latest_result(
         )
         == 0
     )
-    saved = drift.json.loads(state.read_text(encoding="utf-8"))
+    saved = json.loads(state.read_text(encoding="utf-8"))
     assert saved["severity"] == "none"
     assert saved["pinned_sha256"] == saved["current_sha256"]
     assert saved["checked_at"].endswith("Z")
@@ -342,3 +336,227 @@ def test_cli_atomically_persists_safe_latest_result(
         "drift-state.json",
         "pinned.yaml",
     ]
+
+
+def test_hashes_are_of_exact_document_bytes() -> None:
+    report = compare_openapi(BASE, BASE + b"\n")
+    assert report.pinned_sha256 == hashlib.sha256(BASE).hexdigest()
+    assert report.current_sha256 == hashlib.sha256(BASE + b"\n").hexdigest()
+    assert report.severity == "none"
+
+
+@pytest.mark.parametrize("side", ["pinned", "current"])
+def test_oversized_document_is_rejected_before_parsing(side: str) -> None:
+    oversized = b" " * (drift.MAX_DOCUMENT_BYTES + 1)
+    with pytest.raises(drift.SpecReadError, match="size_limit"):
+        compare_openapi(oversized if side == "pinned" else BASE,
+                        oversized if side == "current" else BASE)
+
+
+def test_failed_atomic_replace_keeps_previous_state_and_removes_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    state = tmp_path / "state.json"
+    state.write_text("previous", encoding="utf-8")
+
+    def denied(*args: object) -> None:
+        raise PermissionError("SYNTHETIC_PRIVATE_PATH")
+
+    monkeypatch.setattr(drift.os, "replace", denied)
+    with pytest.raises(PermissionError):
+        drift._write_state(state, compare_openapi(BASE, BASE), datetime.now(UTC))
+    assert state.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.iterdir()) == [state]
+
+
+def test_cli_failure_does_not_print_exception_text_or_custom_class_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    class SYNTHETIC_SECRET_EXCEPTION(Exception):
+        pass
+
+    pinned = tmp_path / "pinned.yaml"
+    pinned.write_bytes(BASE)
+
+    def failed(url: str) -> bytes:
+        raise SYNTHETIC_SECRET_EXCEPTION("https://u:SYNTHETIC_PASSWORD@example.test body")
+
+    monkeypatch.setattr(drift, "_download", failed)
+    assert drift.main(["--pinned", str(pinned), "--remote", "https://example.test"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "severity": "unreadable", "error_class": "UnexpectedError",
+    }
+
+
+@pytest.mark.parametrize("links", ["aliases", "references", "merges"])
+def test_small_exponential_schema_graph_is_rejected_with_fixed_safe_error(links: str) -> None:
+    if links == "aliases":
+        levels = ["  A0: &a0 {type: object}"]
+        levels += [f"  A{i}: &a{i} {{allOf: [*a{i-1}, *a{i-1}]}}" for i in range(1, 19)]
+        schema = "*a18"
+    elif links == "merges":
+        levels = ["  A0: &a0 {type: object}"]
+        levels += [f"  A{i}: &a{i} {{<<: [*a{i-1}, *a{i-1}]}}" for i in range(1, 19)]
+        schema = "*a18"
+    else:
+        levels = ["  A0: {type: object}"]
+        levels += [
+            f"  A{i}: {{allOf: [{{$ref: '#/x/A{i-1}'}}, {{$ref: '#/x/A{i-1}'}}]}}"
+            for i in range(1, 19)
+        ]
+        schema = "{$ref: '#/x/A18'}"
+    document = (
+        "openapi: 3.0.0\nx:\n" + "\n".join(levels) + "\npaths:\n"
+        "  /test:\n    get:\n      operationId: getTest\n      responses:\n"
+        "        '200':\n          content:\n            application/json:\n"
+        f"              schema: {schema}\n"
+    ).encode()
+    assert len(document) < 2048
+    started = perf_counter()
+    with pytest.raises(drift.SpecReadError, match="^(structure_limit|work_limit)$") as failure:
+        compare_openapi(BASE, document)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+    assert perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize("extension", ["[" * 80 + "0" + "]" * 80, "&a [*a]"])
+def test_deep_or_recursive_yaml_is_rejected_before_schema_traversal(extension: str) -> None:
+    document = f"openapi: 3.0.0\npaths: {{}}\nx: {extension}\n".encode()
+    with pytest.raises(drift.SpecReadError, match="^structure_limit$"):
+        compare_openapi(BASE, document)
+
+
+@pytest.mark.parametrize(
+    ("parent_length", "leaves", "category"),
+    [
+        pytest.param(4096, 256, "path_limit", id="single_reduced"),
+        pytest.param(300000, 2000, "path_limit", id="original_size"),
+        pytest.param(950, 1200, "path_bytes_limit", id="aggregate"),
+        pytest.param(600, 1, "path_limit", id="utf8_single"),
+    ],
+)
+def test_real_pinned_long_parent_fanout_is_bounded_before_paths_are_saved(
+    parent_length: int, leaves: int, category: str,
+) -> None:
+    pinned = drift.DEFAULT_PINNED_FILE.read_bytes()
+    parent = "SYNTHETIC_PRIVATE_KEY_" + ("界" if leaves == 1 else "x") * parent_length
+    document: dict[str, object] = {"openapi": "3.0.0", "paths": {}}
+    document["paths"]["/fanout-budget-probe"] = {
+        "get": {
+            "operationId": "getFanoutBudgetProbe",
+            "responses": {"200": {"description": "ok", "content": {
+                "application/json": {"schema": {"properties": {
+                    parent: {"properties": {
+                        f"leaf{i}": {"type": "string"} for i in range(leaves)
+                    }},
+                }}},
+            }}},
+        },
+    }
+    current = yaml.safe_dump(document, allow_unicode=True).encode("utf-8")
+    assert len(current) < 2 * 1024 * 1024
+    with pytest.raises(drift.SpecReadError, match=f"^{category}$") as failure:
+        compare_openapi(pinned, current)
+    assert parent not in str(failure.value)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+
+
+def test_real_pinned_result_is_unchanged_under_path_budgets() -> None:
+    pinned = drift.DEFAULT_PINNED_FILE.read_bytes()
+    report = compare_openapi(pinned, pinned)
+    assert report.severity == "none"
+    assert report.changes == ()
+    assert report.pinned_sha256 == report.current_sha256 == hashlib.sha256(pinned).hexdigest()
+
+
+@pytest.mark.parametrize("field", ["name", "in"])
+@pytest.mark.parametrize("shape", ["alias_list", "deep_mapping", "integer", "null"])
+def test_parameter_container_or_nonstring_is_rejected_before_rendering(
+    field: str, shape: str,
+) -> None:
+    scalar = "SYNTHETIC_PRIVATE_PARAMETER_" + "x" * 4096
+    if shape == "alias_list":
+        # Container aliases are emitted by SafeDumper; scalar strings alone are not.
+        value: object = [[scalar]] * 64
+    elif shape == "deep_mapping":
+        value = scalar
+        for _ in range(12):
+            value = {"nested": value}
+    elif shape == "integer":
+        value = 42
+    else:
+        value = None
+    parameter = {"name": "limit", "in": "query", "required": False}
+    parameter[field] = value
+    current = yaml.safe_dump({
+        "openapi": "3.0.0", "paths": {"/test": {"get": {
+            "operationId": "getTest", "parameters": [parameter],
+            "responses": {"200": {"description": "ok"}},
+        }}},
+    }).encode("utf-8")
+    with pytest.raises(drift.SpecReadError, match="^parameter_type$") as failure:
+        compare_openapi(drift.DEFAULT_PINNED_FILE.read_bytes(), current)
+    assert scalar not in str(failure.value)
+    assert drift.safe_error_category(failure.value) == "SpecReadError"
+
+
+@pytest.mark.parametrize("field", ["name", "in"])
+def test_parameter_type_check_never_calls_container_str_or_repr(field: str) -> None:
+    rendered: list[str] = []
+
+    class ForbiddenRendering(list[object]):
+        def __str__(self) -> str:
+            rendered.append("str")
+            raise AssertionError("parameter conversion must not happen")
+
+        def __repr__(self) -> str:
+            rendered.append("repr")
+            raise AssertionError("parameter conversion must not happen")
+
+    parameter: dict[str, object] = {"name": "limit", "in": "query"}
+    parameter[field] = ForbiddenRendering()
+    with pytest.raises(drift.SpecReadError, match="^parameter_type$"):
+        drift._parameter_path(parameter)
+    assert rendered == []
+
+
+@pytest.mark.parametrize("required", ["field", {"field": "nested"}, [["field"]], [42], None])
+def test_required_must_be_a_list_of_strings_before_schema_rendering(required: object) -> None:
+    current = yaml.safe_dump({
+        "openapi": "3.0.0", "paths": {"/test": {"get": {
+            "operationId": "getTest", "responses": {"200": {"content": {
+                "application/json": {"schema": {"required": required, "properties": {
+                    "field": {"type": "string"},
+                }}},
+            }}},
+        }}},
+    }).encode("utf-8")
+    with pytest.raises(drift.SpecReadError, match="^required_type$"):
+        compare_openapi(drift.DEFAULT_PINNED_FILE.read_bytes(), current)
+
+
+def test_required_type_check_never_renders_container_elements() -> None:
+    class ForbiddenRendering(list[object]):
+        def __str__(self) -> str:
+            raise AssertionError("required element must not be rendered")
+
+        def __repr__(self) -> str:
+            raise AssertionError("required element must not be rendered")
+
+    with pytest.raises(drift.SpecReadError, match="^required_type$"):
+        drift._schema_fields({}, {"required": [ForbiddenRendering()], "properties": {}})
+
+
+def test_mapping_keys_never_render_nonstring_yaml_scalars_or_objects() -> None:
+    class ForbiddenRendering:
+        def __str__(self) -> str:
+            raise AssertionError("mapping key must not be rendered")
+
+        def __repr__(self) -> str:
+            raise AssertionError("mapping key must not be rendered")
+
+    for key in (ForbiddenRendering(), b"SYNTHETIC_PRIVATE_BINARY_KEY"):
+        with pytest.raises(drift.SpecReadError, match="^mapping_key_type$"):
+            drift._mapping({key: {}}, label="schema properties")

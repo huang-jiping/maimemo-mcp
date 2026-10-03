@@ -21,6 +21,7 @@ class DatabaseSettings(BaseModel):
     model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
     database_url: str = Field(min_length=1, repr=False)
+    connect_timeout_seconds: int = Field(default=10, ge=1, le=60)
 
     @field_validator("database_url")
     @classmethod
@@ -34,6 +35,10 @@ class DatabaseSettings(BaseModel):
         values = {}
         if "MAIMEMO_DATABASE_URL" in source:
             values["database_url"] = source["MAIMEMO_DATABASE_URL"]
+        if "MAIMEMO_DATABASE_CONNECT_TIMEOUT_SECONDS" in source:
+            values["connect_timeout_seconds"] = source[
+                "MAIMEMO_DATABASE_CONNECT_TIMEOUT_SECONDS"
+            ]
         return cls.model_validate(values)
 
 
@@ -123,10 +128,17 @@ class AnalysisIntervals(BaseModel):
 
 
 def _read_secret(path: Path) -> SecretStr:
+    unreadable: type[OSError] | None = None
     try:
         value = path.read_text(encoding="utf-8").rstrip("\r\n")
     except UnicodeDecodeError:
         value = None
+    except OSError as exc:
+        unreadable = type(exc)
+        value = None
+    # Raise outside the handler so __context__ cannot retain secret bytes.
+    if unreadable is not None:
+        raise unreadable("Secret file must be readable") from None
     if value is None:
         raise ValueError("Secret file must be valid UTF-8") from None
     if not value.strip():

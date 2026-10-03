@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from maimemo.analysis.service import WeaknessService
 from maimemo.application import open_database, open_upstream
 from maimemo.ingestion.service import StudyIngestionService
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from maimemo_worker.config import WorkerSettings
 from maimemo_worker.scheduler import Schedule
@@ -17,6 +18,7 @@ from maimemo_worker.scheduler import Schedule
 
 @dataclass(frozen=True, repr=False)
 class WorkerDependencies:
+    engine: AsyncEngine
     service: StudyIngestionService
     schedule: Schedule
 
@@ -38,4 +40,4 @@ async def open_worker_dependencies(
                 weakness=weakness,
                 clock=lambda: datetime.now(UTC),
             )
-            yield WorkerDependencies(service, Schedule(settings.intervals))
+            yield WorkerDependencies(database.engine, service, Schedule(settings.intervals))

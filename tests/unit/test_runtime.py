@@ -12,7 +12,9 @@ def test_mcp_runtime_rejects_worker_mode() -> None:
 
 @pytest.mark.parametrize("invalid", [False, True])
 def test_startup_configuration_failure_is_controlled_and_secret_free(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], invalid: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    invalid: bool,
 ) -> None:
     import os
 
@@ -34,11 +36,14 @@ def test_startup_configuration_failure_is_controlled_and_secret_free(
     assert "configuration_error" in output.err
 
 
-@pytest.mark.parametrize("private_url", [
-    "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
-    "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
-    "postgresql+psycopg://u:prefix@LEAK@localhost/d",
-])
+@pytest.mark.parametrize(
+    "private_url",
+    [
+        "postgresql+psycopg://u:prefix@host:LEAK@localhost/d",
+        "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+        "postgresql+psycopg://u:prefix@LEAK@localhost/d",
+    ],
+)
 def test_malformed_database_url_fails_before_runtime_without_secret_or_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -76,9 +81,8 @@ def test_runtime_preflight_controls_late_engine_url_errors(
     settings = MCPSettings.model_construct(
         core=CoreSettings.model_construct(
             database=DatabaseSettings.model_construct(
-                database_url=(
-                    "postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d"
-                )
+                database_url="postgresql+psycopg://u:prefix@host/d?port=LEAK@localhost/d",
+                connect_timeout_seconds=10,
             )
         ),
         upstream=UpstreamCredentialSettings.model_construct(),

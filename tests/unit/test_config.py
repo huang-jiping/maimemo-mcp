@@ -8,6 +8,7 @@ from maimemo.config import (
     UpstreamCredentialSettings,
 )
 from maimemo_mcp.config import MCPSettings as Settings
+from maimemo_server.config import MigrationSettings
 from maimemo_worker.config import WorkerSettings
 from pydantic import SecretStr, ValidationError
 
@@ -293,6 +294,74 @@ def test_default_schedule_and_timezone(environ: dict[str, str]) -> None:
     assert settings.allowed_hosts == ()
     assert settings.core.log_level == "INFO"
     assert settings.drift_state_file == Path("var/openapi-drift.json")
+
+
+def test_startup_timeout_defaults(environ: dict[str, str]) -> None:
+    assert Settings.load(environ).core.database.connect_timeout_seconds == 10
+    migration = MigrationSettings.load(environ)
+    assert migration.lock_timeout_seconds == 30
+    assert migration.statement_timeout_seconds == 300
+    assert WorkerSettings.load(environ).schema_wait_timeout_seconds == 60
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "loader", "path", "maximum"),
+    [
+        (
+            "MAIMEMO_DATABASE_CONNECT_TIMEOUT_SECONDS",
+            Settings.load,
+            lambda value: value.core.database.connect_timeout_seconds,
+            60,
+        ),
+        (
+            "MAIMEMO_MIGRATION_LOCK_TIMEOUT_SECONDS",
+            MigrationSettings.load,
+            lambda value: value.lock_timeout_seconds,
+            300,
+        ),
+        (
+            "MAIMEMO_MIGRATION_STATEMENT_TIMEOUT_SECONDS",
+            MigrationSettings.load,
+            lambda value: value.statement_timeout_seconds,
+            3600,
+        ),
+        (
+            "MAIMEMO_SCHEMA_WAIT_TIMEOUT_SECONDS",
+            WorkerSettings.load,
+            lambda value: value.schema_wait_timeout_seconds,
+            600,
+        ),
+    ],
+)
+def test_startup_timeouts_have_positive_bounded_environment_values(
+    environ: dict[str, str],
+    environment_name: str,
+    loader: object,
+    path: object,
+    maximum: int,
+) -> None:
+    for value in (0, -1, maximum + 1):
+        environ[environment_name] = str(value)
+        with pytest.raises(ValidationError):
+            loader(environ)  # type: ignore[operator]
+    for value in (1, maximum):
+        environ[environment_name] = str(value)
+        assert path(loader(environ)) == value  # type: ignore[operator]
+
+
+def test_unreadable_secret_error_does_not_retain_private_path(
+    environ: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import traceback
+
+    def denied(path: Path, **kwargs: object) -> str:
+        raise PermissionError("SYNTHETIC_PATH_PASSWORD")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(OSError) as caught:
+        Settings.load(environ).upstream.read_maimemo_token()
+    assert "SYNTHETIC_PATH_PASSWORD" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
 
 
 def test_explicit_environment_overrides(environ: dict[str, str]) -> None:

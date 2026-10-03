@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from maimemo.storage.database import create_async_engine
-from sqlalchemy import text
+from maimemo.storage.schema import SchemaStatus, expected_schema_revision, inspect_schema
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -26,12 +26,13 @@ async def _oauth_not_configured(request: Request) -> JSONResponse:
 
 def create_app(settings: ServerSettings) -> Starlette:
     async def ready(request: Request) -> JSONResponse:
-        engine = create_async_engine(settings.database.database_url)
+        engine = create_async_engine(
+            settings.database.database_url,
+            connect_timeout_seconds=settings.database.connect_timeout_seconds,
+        )
         try:
-            async with engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-                revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            if revision != "0004":
+            schema = await inspect_schema(engine, expected_schema_revision())
+            if schema.status is not SchemaStatus.CURRENT:
                 return JSONResponse({"status": "not_ready"}, status_code=503)
         except Exception:
             return JSONResponse({"status": "not_ready"}, status_code=503)

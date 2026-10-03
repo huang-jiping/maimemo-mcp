@@ -1,5 +1,7 @@
 .superpowers/
 var/
+data/
+backup/
 .venv/
 __pycache__/
 *.py[cod]

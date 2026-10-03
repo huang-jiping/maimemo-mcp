@@ -13,6 +13,11 @@ API 和外部 PostgreSQL；反向代理网络只通过 `compose.proxy.example.ya
 
 ## 1. 部署前准备
 
+先执行 `docker version`，记录 Server/Engine 版本。Engine 必须为 28.0.0 或更高，或有 NAS
+厂商明确回补 localhost 端口发布漏洞的可核验证据；两项均不满足时禁止启动应用和连接
+Tunnel。版本门禁通过后，还要从另一台同一 LAN 主机验证 `NAS_IP:8000` 不可达；任何 HTTP
+响应都不算隔离通过，且这项检查不能替代版本/回补门禁。
+
 1. 为应用创建独立、最小权限的 PostgreSQL 用户和数据库，不复用管理员账号。
 2. 在仓库外或被 `.gitignore` 排除的 `secrets/` 目录创建 `maimemo_token` 与随机生成的
    `token_fingerprint_key`。文件只放值本身，可有一个末尾换行。应用容器固定以
@@ -31,8 +36,8 @@ API 和外部 PostgreSQL；反向代理网络只通过 `compose.proxy.example.ya
    `mode` 对这种来源会被静默忽略；本项目因此不在 Compose 中伪装设置这些字段，访问权限
    必须在 NAS 源文件 owner/group/ACL 上落实：
    <https://docs.docker.com/reference/compose-file/services/#secrets>。
-3. 创建 `var/`，供运维任务生成的 OpenAPI 漂移状态文件使用；容器以只读方式挂载。
-   Linux NAS 上确保目录允许 UID10001 遍历（例如 `mkdir -p var && chmod 0755 var`）。
+3. 创建 `var/`，供 Worker 生成 OpenAPI 漂移状态文件；Worker 读写挂载，MCP 只读挂载。
+   Linux NAS 上确保目录由 UID10001 管理（例如 `mkdir -p var && chmod 0700 var`）。
    状态 writer 每次原子发布均设为 `0644`，文件仅含公开规范 hash、时间和 severity；
    不要对旧 inode 单次 chmod 后依赖它跨 replace 生效，也不要将密钥放进 `var/`。
 4. 从 `.env.example` 创建不提交 Git 的 `.env`，固定三个已验收的镜像 tag 或 digest，并设置
@@ -94,22 +99,14 @@ docker compose logs --since 30m server mcp worker
 日志只应包含 allowlist 字段。若发现凭据或个人正文，立即停止服务、轮换相关凭据并保留
 不含敏感值的事件时间和镜像 digest 用于调查。
 
-### 2.1 周期漂移检查与告警
+### 2.1 Worker 漂移监测与告警
 
-在 NAS 的任务调度器或受监督任务中每 6 小时执行一次，工作目录设为仓库的绝对路径；
-使用已锁定依赖的主机环境，命令为：
-
-```text
-uv run python scripts/check_openapi_drift.py --pinned openapi/maimemo-api.yaml --remote https://open.maimemo.com/api_bundle.yaml --state-file var/openapi-drift.json
-```
-
-此任务只获取公开 OpenAPI，不需要 Token。退出码 0 表示 none/informational，1 表示 high，
-2 表示获取、解析或发布失败；调度器应把 1/2 交给现有 NAS 告警渠道，并记录安全 JSON 输出。
+Worker 启动时检查公开 OpenAPI，此后每六小时重试；无需额外主机定时任务，也不使用 Token。
 消费者读取 `/health/status` 的 `drift_status`：high 需要优先排查；informational 安排规范
-审阅；unavailable/stale 检查任务运行记录、目录权限和发布路径。超过 26 小时未更新即 stale，
-因此应对连续失败或未运行报警。新解析失败不会伪造成功状态，旧文件会自然过期。
+审阅；unavailable/stale 检查 Worker 日志、目录权限和发布路径。超过 26 小时未更新即 stale，
+因此应对连续失败报警。新解析失败不会伪造成功状态，旧文件会自然过期。
 合成 Linux 容器测试验证 root 发布后 UID10001 在连续两次原子替换后仍可读；实际 NAS ACL
-和定时任务是否运行仍需部署者检查。
+和 Worker 长时间运行仍需部署者检查。
 
 ## 3. 原生 NAS Tunnel Client 的本机访问
 

@@ -44,7 +44,8 @@ def test_readiness_failure_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None
             return None
 
     monkeypatch.setattr(
-        "maimemo_server.app.create_async_engine", lambda database_url: FailedEngine()
+        "maimemo_server.app.create_async_engine",
+        lambda database_url, **kwargs: FailedEngine(),
     )
     with TestClient(create_app(settings())) as client:
         response = client.get("/health/ready")

@@ -7,6 +7,7 @@ from maimemo.config import (
     DatabaseSettings,
     UpstreamCredentialSettings,
 )
+from maimemo_worker.config import WorkerSettings
 from pydantic import SecretStr, ValidationError
 
 from maimemo_mcp.config import Settings
@@ -44,6 +45,14 @@ def test_analysis_intervals_have_worker_defaults() -> None:
 
     assert intervals.today_interval_minutes == 30
     assert intervals.records_interval_minutes == 120
+
+
+def test_worker_settings_do_not_require_mcp_environment(environ: dict[str, str]) -> None:
+    settings = WorkerSettings.load(environ)
+
+    assert settings.intervals.today_interval_minutes == 30
+    assert settings.intervals.records_interval_minutes == 120
+    assert settings.core.database.database_url == environ["MAIMEMO_DATABASE_URL"]
 
 
 def test_core_database_error_does_not_retain_secret() -> None:

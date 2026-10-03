@@ -14,7 +14,7 @@ from maimemo.storage.models.ingestion import IngestionRun
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob, advisory_key
+from maimemo_worker.scheduler import Schedule, ScheduledJob, advisory_key
 
 logger = logging.getLogger(__name__)
 

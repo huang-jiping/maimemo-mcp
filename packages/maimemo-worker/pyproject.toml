@@ -7,7 +7,14 @@ name = "maimemo-worker"
 version = "0.2.0"
 description = "Maimemo background worker"
 requires-python = ">=3.12,<3.13"
-dependencies = ["maimemo>=0.2.0,<0.3"]
+dependencies = [
+  "maimemo>=0.2.0,<0.3",
+  "pydantic>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
+]
+
+[project.scripts]
+maimemo-worker = "maimemo_worker.runtime:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/maimemo_worker"]

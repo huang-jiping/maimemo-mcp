@@ -357,6 +357,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "maimemo-worker" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -380,6 +381,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "maimemo-worker", editable = "packages/maimemo-worker" },
     { name = "mypy", specifier = ">=1,<2" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "pytest-asyncio", specifier = ">=1,<2" },
@@ -404,10 +406,16 @@ version = "0.2.0"
 source = { editable = "packages/maimemo-worker" }
 dependencies = [
     { name = "maimemo" },
+    { name = "pydantic" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "maimemo", editable = "packages/maimemo" }]
+requires-dist = [
+    { name = "maimemo", editable = "packages/maimemo" },
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },
+]
 
 [[package]]
 name = "mako"

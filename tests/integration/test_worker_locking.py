@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,16 +12,15 @@ from maimemo.api_client.models import (
     TodayItemsResponse,
 )
 from maimemo.api_client.study import StudyRecordsRequest, TodayItemsRequest
+from maimemo.config import AnalysisIntervals
 from maimemo.ingestion.service import StudyIngestionService
 from maimemo.storage.models.ingestion import IngestionRun
 from maimemo.storage.models.learning import DailyProgress
 from maimemo.storage.repositories import StudyHistoryRepository
+from maimemo_worker.scheduler import Schedule, ScheduledJob
+from maimemo_worker.worker import Worker
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
-from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-from maimemo_mcp.ingestion.worker import Worker
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 AT = datetime(2030, 10, 2, 10, 17, tzinfo=SHANGHAI)
@@ -30,13 +28,7 @@ SLOT = datetime(2030, 10, 2, 10, tzinfo=SHANGHAI)
 
 
 def schedule() -> Schedule:
-    return Schedule(
-        Settings(
-            database_url="postgresql+psycopg://unused",
-            token_file=Path("unused"),
-            token_fingerprint_key_file=Path("unused"),
-        )
-    )
+    return Schedule(AnalysisIntervals())
 
 
 class Upstream:

@@ -4,10 +4,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 
+from maimemo.config import AnalysisIntervals
 from maimemo.ingestion.locks import advisory_key as advisory_key
 from maimemo.ingestion.normalizers import SHANGHAI, utc_instant
-
-from maimemo_mcp.config import Settings
 
 
 @dataclass(frozen=True)
@@ -29,9 +28,9 @@ class ScheduledJob:
 
 
 class Schedule:
-    def __init__(self, settings: Settings) -> None:
-        self.today_interval = settings.today_interval
-        self.records_interval = settings.records_interval
+    def __init__(self, intervals: AnalysisIntervals) -> None:
+        self.today_interval = intervals.today_interval
+        self.records_interval = intervals.records_interval
         self._last_emitted: dict[str, datetime] = {}
 
     def next_runs(self, now: datetime) -> list[ScheduledJob]:

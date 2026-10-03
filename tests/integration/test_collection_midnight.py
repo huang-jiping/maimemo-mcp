@@ -98,10 +98,10 @@ async def test_global_lock_wait_refreshes_learning_date_before_first_request(
 async def test_default_worker_reuses_its_live_clock_for_midnight_checks(
     database: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import maimemo_worker.worker as worker_module
     from maimemo.api_client.models import StudyProgressResponse
+    from maimemo_worker.scheduler import ScheduledJob
 
-    import maimemo_mcp.ingestion.worker as worker_module
-    from maimemo_mcp.ingestion.scheduler import ScheduledJob
     from tests.integration.test_worker_locking import Upstream, schedule
 
     instant = BEFORE

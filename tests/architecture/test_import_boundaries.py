@@ -28,8 +28,8 @@ def forbidden_imports(source_root: str, forbidden: set[str]) -> list[str]:
     return violations
 
 
-def advisory_key_import(module: str) -> str | None:
-    source_file = ROOT / "packages" / "maimemo" / "src" / Path(*module.split("."))
+def advisory_key_import(package: str, module: str) -> str | None:
+    source_file = ROOT / "packages" / package / "src" / Path(*module.split("."))
     source_file = source_file.with_suffix(".py")
     for imported in imported_modules(source_file):
         if imported.endswith("ingestion.locks"):
@@ -45,4 +45,16 @@ def test_core_never_imports_runtime_packages() -> None:
 
 
 def test_repository_uses_core_advisory_key() -> None:
-    assert advisory_key_import("maimemo.storage.repositories") == "maimemo.ingestion.locks"
+    assert advisory_key_import("maimemo", "maimemo.storage.repositories") == (
+        "maimemo.ingestion.locks"
+    )
+
+
+def test_worker_never_imports_mcp() -> None:
+    assert forbidden_imports("packages/maimemo-worker/src", {"maimemo_mcp"}) == []
+
+
+def test_worker_uses_core_advisory_key() -> None:
+    assert advisory_key_import("maimemo-worker", "maimemo_worker.scheduler") == (
+        "maimemo.ingestion.locks"
+    )

@@ -23,6 +23,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "maimemo-worker>=0.2.0,<0.3",
   "pytest>=8,<10",
   "pytest-asyncio>=1,<2",
   "ruff>=0.12,<1",

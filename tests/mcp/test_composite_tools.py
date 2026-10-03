@@ -512,15 +512,21 @@ async def test_weak_analysis_coverage_includes_unscored_words_before_filtering(
 async def test_worker_persists_scores_visible_through_real_mcp(
     workflow_settings: Settings, workflow_database: AsyncEngine,
 ) -> None:
+    from maimemo.config import AnalysisIntervals
     from maimemo.ingestion.service import StudyIngestionService
+    from maimemo_worker.scheduler import Schedule, ScheduledJob
+    from maimemo_worker.worker import Worker
 
-    from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-    from maimemo_mcp.ingestion.worker import Worker
     from tests.integration.test_worker_locking import Upstream
 
     factory = async_sessionmaker(workflow_database, expire_on_commit=False)
-    collector = Worker(StudyIngestionService(factory, Upstream()), Schedule(workflow_settings),
-                       clock=lambda: AT)
+    intervals = AnalysisIntervals(
+        today_interval_minutes=workflow_settings.today_interval_minutes,
+        records_interval_minutes=workflow_settings.records_interval_minutes,
+    )
+    collector = Worker(
+        StudyIngestionService(factory, Upstream()), Schedule(intervals), clock=lambda: AT
+    )
     assert (await collector.run_job(ScheduledJob("today", AT), AT)).status == "complete"
     async with Client(create_mcp_app(workflow_settings, clock=lambda: AT).sdk) as client:
         result = await client.call_tool("get_weak_words", {})
@@ -572,10 +578,11 @@ async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
 ) -> None:
     import logging
 
+    from maimemo.config import AnalysisIntervals
     from maimemo.ingestion.service import StudyIngestionService
+    from maimemo_worker.scheduler import Schedule, ScheduledJob
+    from maimemo_worker.worker import Worker
 
-    from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-    from maimemo_mcp.ingestion.worker import Worker
     from maimemo_mcp.mcp_server.dependencies import open_dependencies
 
     private = "SYNTHETIC_SCHEMA_ARCHIVE_PRIVATE"
@@ -587,9 +594,15 @@ async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
         })), **kw
     ))
     async with open_dependencies(workflow_settings) as deps:
-        collector = Worker(StudyIngestionService(deps.sessions, deps.study,
-                                                weakness=deps.weakness),
-                           Schedule(workflow_settings), clock=lambda: AT)
+        intervals = AnalysisIntervals(
+            today_interval_minutes=workflow_settings.today_interval_minutes,
+            records_interval_minutes=workflow_settings.records_interval_minutes,
+        )
+        collector = Worker(
+            StudyIngestionService(deps.sessions, deps.study, weakness=deps.weakness),
+            Schedule(intervals),
+            clock=lambda: AT,
+        )
         assert (await collector.run_job(ScheduledJob("today", AT), AT)).status == "failed"
     async with workflow_database.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM failed_api_snapshot")) == 1

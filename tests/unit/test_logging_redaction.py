@@ -17,11 +17,11 @@ from maimemo.api_client.errors import UpstreamSchemaError, UpstreamUnavailableEr
 from maimemo.api_client.transport import MaimemoTransport
 from maimemo.ingestion.service import IngestionResult
 from maimemo.logging import SafeJsonFormatter, configure_logging, log_event
+from maimemo_worker.worker import Worker
 from pydantic import BaseModel, SecretStr
 from starlette.applications import Starlette
 
 from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.worker import Worker
 from maimemo_mcp.mcp_server.health import health_routes, operational_health
 
 SECRET = "token-value-ABC123"
@@ -429,7 +429,7 @@ async def test_worker_logs_absorbed_collection_failure_category(
 
     monkeypatch.setattr(worker, "_run_job", failed)
     job = SimpleNamespace(identity="today")
-    with captured_safe_logs("maimemo_mcp.ingestion.worker") as output:
+    with captured_safe_logs("maimemo_worker.worker") as output:
         result = await worker.run_job(job, datetime.now(UTC))
     assert result.status == "failed"
     record = json.loads(output.getvalue())

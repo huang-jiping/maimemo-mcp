@@ -9,8 +9,10 @@ Worker 等待 MCP 健康并核对 schema 后采集。复用已有 PostgreSQL 15+
 `maimemo`，经 external `db_net` 连接。MCP 只发布 `127.0.0.1:8000:8000`，不加入
 `app_net`、不接 NPM、不开放公网入站。Worker 不提供 API，也不发布端口。
 
-当前仅交付本地实现：首个公开 GHCR 镜像未发布，NAS/UGOS 实机未验证。完成发布验收、确认
-包为 Public 且版本标签与 `stable` 能匿名拉取后才部署；不能把模板存在视为镜像已可用。
+首个公开 GHCR 镜像已发布：`v0.1.0`、提交标签和 `stable` 已通过匿名清单查询，均指向
+`sha256:2fc31dcab9d514d13b1abf3da499ae1ddd64e8d7e92a72743b4f18f1bdbf0680`；配置验证为
+`linux/amd64`、运行用户 `1000:10`。NAS/UGOS 实机仍未验证，部署前必须完成下述本地环境
+门禁；公开镜像可用不代表 NAS 网络、权限、数据库连接或备份恢复已经验收。
 
 ## 目录与前置条件
 

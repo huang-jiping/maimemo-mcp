@@ -19,7 +19,10 @@ def create_async_engine_from_settings(settings: Settings) -> AsyncEngine:
         return create_async_engine(
             url,
             pool_pre_ping=True,
-            connect_args={"options": "-c timezone=UTC"},
+            connect_args={
+                "options": "-c timezone=UTC",
+                "connect_timeout": settings.database_connect_timeout_seconds,
+            },
         )
     except Exception:
         # Raise after leaving the handler so dialect errors cannot retain a URL

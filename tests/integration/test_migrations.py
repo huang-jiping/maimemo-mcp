@@ -1,6 +1,7 @@
 """Migration tests catch missing schema, wrong types, and irreversible upgrades."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -8,7 +9,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DataError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from maimemo_mcp.storage.schema import (
+    SchemaNotReadyError,
+    SchemaStatus,
+    inspect_schema,
+    require_current_schema,
+)
 
 EXPECTED_TABLES = {
     "vocabulary",
@@ -24,6 +32,84 @@ EXPECTED_TABLES = {
     "schema_metadata",
     "alembic_version",
 }
+
+
+@pytest.fixture
+async def schema_probe_database(postgres_url: str) -> AsyncIterator[AsyncEngine]:
+    """Version-table mutations are confined to a unique disposable schema."""
+    namespace = f"schema_gate_{uuid4().hex}"
+    admin = create_async_engine(postgres_url)
+    engine = create_async_engine(
+        postgres_url, connect_args={"options": f"-csearch_path={namespace}"}
+    )
+    try:
+        async with admin.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{namespace}"'))
+        yield engine
+    finally:
+        await engine.dispose()
+        async with admin.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{namespace}" CASCADE'))
+        await admin.dispose()
+
+
+@pytest.mark.parametrize(
+    ("alembic", "metadata", "status"),
+    [
+        (("0004",), ("0004",), SchemaStatus.CURRENT),
+        (None, None, SchemaStatus.EMPTY),
+        (("0004",), None, SchemaStatus.INCOMPATIBLE),
+        (None, ("0004",), SchemaStatus.INCOMPATIBLE),
+        ((), (), SchemaStatus.EMPTY),
+        (("0003",), ("0003",), SchemaStatus.INCOMPATIBLE),
+        (("9999",), ("9999",), SchemaStatus.INCOMPATIBLE),
+        (("0004", "branch"), ("0004",), SchemaStatus.INCOMPATIBLE),
+        (("0004",), ("0003",), SchemaStatus.INCOMPATIBLE),
+        (("0004",), (), SchemaStatus.INCOMPATIBLE),
+        (("0004",), ("0004", "0003"), SchemaStatus.INCOMPATIBLE),
+    ],
+)
+async def test_schema_gate_classifies_exact_revisions(
+    schema_probe_database: AsyncEngine,
+    alembic: tuple[str, ...] | None,
+    metadata: tuple[str, ...] | None,
+    status: SchemaStatus,
+) -> None:
+    async with schema_probe_database.begin() as connection:
+        for table, column, revisions in (
+            ("alembic_version", "version_num", alembic),
+            ("schema_metadata", "schema_version", metadata),
+        ):
+            if revisions is not None:
+                await connection.execute(text(f"CREATE TABLE {table} ({column} varchar NOT NULL)"))
+                for revision in revisions:
+                    await connection.execute(
+                        text(f"INSERT INTO {table} ({column}) VALUES (:revision)"),
+                        {"revision": revision},
+                    )
+
+    state = await inspect_schema(schema_probe_database, "0004")
+    assert state.status is status
+    assert state.expected_revision == "0004"
+    assert state.alembic_revisions == tuple(sorted(alembic or ()))
+    assert state.metadata_revisions == tuple(sorted(metadata or ()))
+    if status is SchemaStatus.CURRENT:
+        await require_current_schema(schema_probe_database, "0004")
+    else:
+        with pytest.raises(SchemaNotReadyError, match="^schema_incompatible$"):
+            await require_current_schema(schema_probe_database, "0004")
+
+
+async def test_schema_query_failure_has_safe_reason(schema_probe_database: AsyncEngine) -> None:
+    async with schema_probe_database.begin() as connection:
+        await connection.execute(text("CREATE TABLE alembic_version (private_column varchar)"))
+        await connection.execute(text("CREATE TABLE schema_metadata (schema_version varchar)"))
+    state = await inspect_schema(schema_probe_database, "0004")
+    assert state.status is SchemaStatus.UNAVAILABLE
+    with pytest.raises(SchemaNotReadyError) as failure:
+        await require_current_schema(schema_probe_database, "0004")
+    assert str(failure.value) == "database_unavailable"
+    assert "private_column" not in repr(failure.value)
 
 
 async def test_upgrade_creates_expected_tables(database: AsyncEngine) -> None:

@@ -234,6 +234,47 @@ def test_default_schedule_and_timezone(environ: dict[str, str]) -> None:
     assert settings.openapi_drift_state_file == Path("var/openapi-drift.json")
 
 
+def test_startup_timeout_defaults(environ: dict[str, str]) -> None:
+    settings = Settings.load(environ)
+    assert settings.database_connect_timeout_seconds == 10
+    assert settings.migration_lock_timeout_seconds == 30
+    assert settings.migration_statement_timeout_seconds == 300
+    assert settings.schema_wait_timeout_seconds == 60
+
+
+@pytest.mark.parametrize(("field", "maximum"), [
+    ("database_connect_timeout_seconds", 60),
+    ("migration_lock_timeout_seconds", 300),
+    ("migration_statement_timeout_seconds", 3600),
+    ("schema_wait_timeout_seconds", 600),
+])
+def test_startup_timeouts_have_positive_bounded_environment_values(
+    environ: dict[str, str], field: str, maximum: int,
+) -> None:
+    for value in (0, -1, maximum + 1):
+        environ[f"MAIMEMO_{field.upper()}"] = str(value)
+        with pytest.raises(ValidationError):
+            Settings.load(environ)
+    for value in (1, maximum):
+        environ[f"MAIMEMO_{field.upper()}"] = str(value)
+        assert getattr(Settings.load(environ), field) == value
+
+
+def test_unreadable_secret_error_does_not_retain_private_path(
+    environ: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import traceback
+
+    def denied(path: Path, **kwargs: object) -> str:
+        raise PermissionError("SYNTHETIC_PATH_PASSWORD")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(OSError) as caught:
+        Settings.load(environ).read_maimemo_token()
+    assert "SYNTHETIC_PATH_PASSWORD" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
 def test_explicit_environment_overrides(environ: dict[str, str]) -> None:
     environ.update({
         "MAIMEMO_TIMEZONE": "UTC",

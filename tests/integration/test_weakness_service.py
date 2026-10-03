@@ -4,20 +4,19 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-
-from maimemo_mcp.analysis.models import WeakWordQuery
-from maimemo_mcp.analysis.service import WeaknessService
-from maimemo_mcp.ingestion.normalizers import (
+from maimemo.analysis.models import WeakWordQuery
+from maimemo.analysis.service import WeaknessService
+from maimemo.ingestion.normalizers import (
     DailyWordObservationInput,
     StudyRecordSnapshotInput,
 )
-from maimemo_mcp.storage.models.analysis import WeaknessScore
-from maimemo_mcp.storage.models.ingestion import IngestionRun
-from maimemo_mcp.storage.models.learning import Vocabulary
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
+from maimemo.storage.models.analysis import WeaknessScore
+from maimemo.storage.models.ingestion import IngestionRun
+from maimemo.storage.models.learning import Vocabulary
+from maimemo.storage.repositories import StudyHistoryRepository
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 AT = datetime(2030, 10, 2, 12, tzinfo=UTC)
 

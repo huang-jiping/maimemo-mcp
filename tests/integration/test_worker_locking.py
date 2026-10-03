@@ -7,22 +7,22 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+from maimemo.api_client.models import (
+    StudyProgressResponse,
+    StudyRecordsResponse,
+    TodayItemsResponse,
+)
+from maimemo.api_client.study import StudyRecordsRequest, TodayItemsRequest
+from maimemo.ingestion.service import StudyIngestionService
+from maimemo.storage.models.ingestion import IngestionRun
+from maimemo.storage.models.learning import DailyProgress
+from maimemo.storage.repositories import StudyHistoryRepository
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from maimemo_mcp.config import Settings
 from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-from maimemo_mcp.ingestion.service import StudyIngestionService
 from maimemo_mcp.ingestion.worker import Worker
-from maimemo_mcp.maimemo_client.models import (
-    StudyProgressResponse,
-    StudyRecordsResponse,
-    TodayItemsResponse,
-)
-from maimemo_mcp.maimemo_client.study import StudyRecordsRequest, TodayItemsRequest
-from maimemo_mcp.storage.models.ingestion import IngestionRun
-from maimemo_mcp.storage.models.learning import DailyProgress
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 AT = datetime(2030, 10, 2, 10, 17, tzinfo=SHANGHAI)
@@ -92,9 +92,9 @@ def worker(database: AsyncEngine, upstream: Upstream, **kwargs: Any) -> Worker:
 async def test_scoring_failure_rolls_back_history_and_success_slot_then_retries(
     database: AsyncEngine,
 ) -> None:
-    from maimemo_mcp.storage.models.analysis import WeaknessScore
-    from maimemo_mcp.storage.models.ingestion import ApiSnapshot
-    from maimemo_mcp.storage.models.learning import DailyWordObservation
+    from maimemo.storage.models.analysis import WeaknessScore
+    from maimemo.storage.models.ingestion import ApiSnapshot
+    from maimemo.storage.models.learning import DailyWordObservation
 
     job = ScheduledJob("today", SLOT)
     async with database.begin() as connection:

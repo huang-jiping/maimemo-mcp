@@ -9,8 +9,6 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from maimemo_mcp.config import Settings
-
 _SAFE_TEXT = re.compile(r"^[A-Za-z0-9_./:{}@-]{1,200}$")
 _SAFE_EVENT = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _FIELDS = frozenset({"endpoint", "latency_ms", "status", "trace_id", "error_class"})
@@ -84,15 +82,11 @@ def log_event(
     logger.info(event, extra={"safe_event": event, "safe_fields": fields})
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(log_level: str) -> None:
     """Install one process-wide safe JSON handler at the configured level."""
 
-    secrets = (
-        settings.read_maimemo_token().get_secret_value(),
-        settings.read_token_fingerprint_key().get_secret_value(),
-    )
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(SafeJsonFormatter(secrets=secrets))
+    handler.setFormatter(SafeJsonFormatter())
     root = logging.getLogger()
     root.handlers = [handler]
-    root.setLevel(getattr(logging, settings.log_level))
+    root.setLevel(getattr(logging, log_level))

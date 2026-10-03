@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maimemo_mcp.storage.models.rate_limit import ApiRateLimitWindow
+from maimemo.storage.models.rate_limit import ApiRateLimitWindow
 
 WINDOWS = (("10s", 10, 20), ("60s", 60, 40), ("5h", 18000, 2000))
 

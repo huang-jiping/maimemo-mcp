@@ -10,17 +10,17 @@ from datetime import UTC, datetime
 from typing import Literal, cast
 
 import uvicorn
+from maimemo.database_url import DatabaseUrlError
+from maimemo.ingestion.service import StudyIngestionService
+from maimemo.logging import configure_logging
+from maimemo.storage.database import create_async_engine
 from pydantic import ValidationError
 
 from maimemo_mcp.config import Settings
-from maimemo_mcp.database_url import DatabaseUrlError
 from maimemo_mcp.ingestion.scheduler import Schedule
-from maimemo_mcp.ingestion.service import StudyIngestionService
 from maimemo_mcp.ingestion.worker import Worker
-from maimemo_mcp.logging import configure_logging
 from maimemo_mcp.mcp_server.app import create_mcp_app
 from maimemo_mcp.mcp_server.dependencies import open_dependencies
-from maimemo_mcp.storage.database import create_async_engine_from_settings
 
 RuntimeMode = Literal["mcp", "worker"]
 
@@ -57,12 +57,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("configuration_error " + ",".join(errors), file=sys.stderr)
         return 2
     try:
-        engine = create_async_engine_from_settings(settings)
+        engine = create_async_engine(settings.database_url)
         engine.sync_engine.dispose()
     except DatabaseUrlError:
         print("configuration_error database_url:invalid", file=sys.stderr)
         return 2
-    configure_logging(settings)
+    configure_logging(settings.log_level)
     if mode == "worker":
         asyncio.run(_run_worker(settings))
         return 0

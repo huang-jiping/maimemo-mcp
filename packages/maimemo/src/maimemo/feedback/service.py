@@ -5,16 +5,16 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maimemo_mcp.feedback.models import (
+from maimemo.api_client.models import Vocabulary as UpstreamVocabulary
+from maimemo.feedback.models import (
     FeedbackEventView,
     FeedbackQuery,
     RecordFeedbackCommand,
     RetractFeedbackCommand,
     normalize_spelling,
 )
-from maimemo_mcp.maimemo_client.models import Vocabulary as UpstreamVocabulary
-from maimemo_mcp.storage.models.feedback import LearningFeedbackEvent
-from maimemo_mcp.storage.repositories import FeedbackRepository
+from maimemo.storage.models.feedback import LearningFeedbackEvent
+from maimemo.storage.repositories import FeedbackRepository
 
 VocabularyResolver = Callable[[str], Awaitable[UpstreamVocabulary | None]]
 

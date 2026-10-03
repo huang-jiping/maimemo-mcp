@@ -8,16 +8,16 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maimemo_mcp.analysis.models import (
+from maimemo.analysis.models import (
     WeaknessAnalysisState,
     WeaknessFactor,
     WeaknessResult,
     WeakWordQuery,
 )
-from maimemo_mcp.analysis.scoring import calculate_weakness
-from maimemo_mcp.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
-from maimemo_mcp.ingestion.normalizers import utc_instant
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
+from maimemo.analysis.scoring import calculate_weakness
+from maimemo.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
+from maimemo.ingestion.normalizers import utc_instant
+from maimemo.storage.repositories import StudyHistoryRepository
 
 REASONS = {
     "RECENT_ERROR": "已观测的近期反馈存在忘记或模糊，影响随时间衰减。",

@@ -84,8 +84,7 @@ async def test_timestamps_are_timezone_aware(database: AsyncEngine) -> None:
 async def test_migration_and_orm_have_no_schema_drift(database: AsyncEngine) -> None:
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
-
-    from maimemo_mcp.storage.base import Base
+    from maimemo.storage.base import Base
 
     async with database.connect() as connection:
         differences = await connection.run_sync(

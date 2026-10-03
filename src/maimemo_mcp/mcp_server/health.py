@@ -9,14 +9,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from maimemo.storage.base import SchemaMetadata
+from maimemo.storage.models.ingestion import IngestionRun
 from sqlalchemy import select, text
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from maimemo_mcp.mcp_server.dependencies import Dependencies
-from maimemo_mcp.storage.base import SchemaMetadata
-from maimemo_mcp.storage.models.ingestion import IngestionRun
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DRIFT_STATE_FIELDS = {"severity", "checked_at", "pinned_sha256", "current_sha256"}

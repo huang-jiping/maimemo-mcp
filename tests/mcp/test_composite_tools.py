@@ -5,21 +5,21 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from mcp.client import Client
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
-from maimemo_mcp.analysis.models import WeakWordQuery
-from maimemo_mcp.analysis.service import WeaknessService
-from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.normalizers import (
+from maimemo.analysis.models import WeakWordQuery
+from maimemo.analysis.service import WeaknessService
+from maimemo.ingestion.normalizers import (
     DailyProgressInput,
     DailyWordObservationInput,
     StudyRecordSnapshotInput,
 )
+from maimemo.storage.models.ingestion import IngestionRun
+from maimemo.storage.repositories import StudyHistoryRepository
+from mcp.client import Client
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+
+from maimemo_mcp.config import Settings
 from maimemo_mcp.mcp_server.app import create_mcp_app
-from maimemo_mcp.storage.models.ingestion import IngestionRun
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
 
 AT = datetime(2030, 10, 2, 12, tzinfo=UTC)
 TABLES = (
@@ -512,8 +512,9 @@ async def test_weak_analysis_coverage_includes_unscored_words_before_filtering(
 async def test_worker_persists_scores_visible_through_real_mcp(
     workflow_settings: Settings, workflow_database: AsyncEngine,
 ) -> None:
+    from maimemo.ingestion.service import StudyIngestionService
+
     from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-    from maimemo_mcp.ingestion.service import StudyIngestionService
     from maimemo_mcp.ingestion.worker import Worker
     from tests.integration.test_worker_locking import Upstream
 
@@ -571,8 +572,9 @@ async def test_failed_worker_archive_never_reaches_live_or_composite_mcp(
 ) -> None:
     import logging
 
+    from maimemo.ingestion.service import StudyIngestionService
+
     from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob
-    from maimemo_mcp.ingestion.service import StudyIngestionService
     from maimemo_mcp.ingestion.worker import Worker
     from maimemo_mcp.mcp_server.dependencies import open_dependencies
 

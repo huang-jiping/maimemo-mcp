@@ -1,9 +1,61 @@
 from pathlib import Path
 
 import pytest
+from maimemo.config import (
+    AnalysisIntervals,
+    CoreSettings,
+    DatabaseSettings,
+    UpstreamCredentialSettings,
+)
 from pydantic import SecretStr, ValidationError
 
 from maimemo_mcp.config import Settings
+
+
+def minimal_database_environment() -> dict[str, str]:
+    return {"MAIMEMO_DATABASE_URL": "postgresql+psycopg://localhost/maimemo_test"}
+
+
+def test_core_settings_do_not_define_module_ports_or_intervals() -> None:
+    assert set(CoreSettings.model_fields) == {"database", "timezone", "log_level"}
+
+
+def test_core_settings_load_without_upstream_credentials() -> None:
+    settings = CoreSettings.load(minimal_database_environment())
+
+    assert isinstance(settings.database, DatabaseSettings)
+    assert settings.database.database_url.startswith("postgresql+psycopg://")
+
+
+def test_upstream_credentials_are_loaded_only_when_requested(tmp_path: Path) -> None:
+    environment = {
+        "MAIMEMO_TOKEN_FILE": str(tmp_path / "token"),
+        "MAIMEMO_TOKEN_FINGERPRINT_KEY_FILE": str(tmp_path / "key"),
+    }
+
+    credentials = UpstreamCredentialSettings.load(environment)
+
+    assert credentials.token_file == tmp_path / "token"
+    assert credentials.token_fingerprint_key_file == tmp_path / "key"
+
+
+def test_analysis_intervals_have_worker_defaults() -> None:
+    intervals = AnalysisIntervals.load({})
+
+    assert intervals.today_interval_minutes == 30
+    assert intervals.records_interval_minutes == 120
+
+
+def test_core_database_error_does_not_retain_secret() -> None:
+    import traceback
+
+    private_url = "postgresql+psycopg://u:prefix@host:CORE_SECRET@localhost/d"
+    with pytest.raises(ValidationError) as caught:
+        CoreSettings.load({"MAIMEMO_DATABASE_URL": private_url})
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert "CORE_SECRET" not in formatted
+    assert private_url not in formatted
 
 
 @pytest.fixture

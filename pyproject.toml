@@ -9,6 +9,7 @@ description = "Read-only Maimemo learning data foundation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "maimemo>=0.2.0,<0.3",
   "mcp>=2,<3",
   "pydantic>=2,<3",
   "sqlalchemy[asyncio]>=2,<3",

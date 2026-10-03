@@ -13,15 +13,15 @@ from typing import Any
 
 import httpx
 import pytest
+from maimemo.api_client.errors import UpstreamSchemaError, UpstreamUnavailableError
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.ingestion.service import IngestionResult
+from maimemo.logging import SafeJsonFormatter, configure_logging, log_event
 from pydantic import BaseModel, SecretStr
 from starlette.applications import Starlette
 
 from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.service import IngestionResult
 from maimemo_mcp.ingestion.worker import Worker
-from maimemo_mcp.logging import SafeJsonFormatter, configure_logging, log_event
-from maimemo_mcp.maimemo_client.errors import UpstreamSchemaError, UpstreamUnavailableError
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
 from maimemo_mcp.mcp_server.health import health_routes, operational_health
 
 SECRET = "token-value-ABC123"
@@ -126,7 +126,7 @@ def test_configure_logging_does_not_render_secret_paths_or_values(tmp_path: Path
     original_handlers = root.handlers[:]
     original_level = root.level
     try:
-        configure_logging(app_settings)
+        configure_logging(app_settings.log_level)
         assert root.level == logging.INFO
         assert len(root.handlers) == 1
         assert isinstance(root.handlers[0].formatter, SafeJsonFormatter)
@@ -308,7 +308,7 @@ async def test_transport_logs_each_retry_and_limiter_wait_with_fixed_endpoint() 
             return httpx.Response(429, headers={"Retry-After": "0"}, text=SECRET)
         return httpx.Response(200, json={"value": 1, "private": SECRET})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),
@@ -358,7 +358,7 @@ async def test_transport_logs_safe_controlled_error_classes(
             raise httpx.ReadTimeout(f"Bearer {SECRET}", request=request)
         return httpx.Response(200, json={"value": SECRET, "personal": "private-word"})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),
@@ -389,7 +389,7 @@ async def test_concurrent_transport_contexts_keep_trace_ids_isolated() -> None:
         await asyncio.sleep(0)
         return httpx.Response(200, json={"value": 1})
 
-    with captured_safe_logs("maimemo_mcp.maimemo_client.transport") as output:
+    with captured_safe_logs("maimemo.api_client.transport") as output:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             transport = MaimemoTransport(
                 SecretStr(SECRET),

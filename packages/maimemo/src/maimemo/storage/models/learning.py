@@ -15,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from maimemo_mcp.storage.base import Base, ObservationTimes, UUIDPrimaryKey
+from maimemo.storage.base import Base, ObservationTimes, UUIDPrimaryKey
 
 
 class Vocabulary(UUIDPrimaryKey, Base):

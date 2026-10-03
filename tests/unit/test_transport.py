@@ -7,16 +7,15 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from pydantic import BaseModel, ConfigDict, SecretStr
-
-from maimemo_mcp.maimemo_client.errors import (
+from maimemo.api_client.errors import (
     AuthenticationError,
     InvalidRequestError,
     RateLimitError,
     UpstreamSchemaError,
     UpstreamUnavailableError,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo.api_client.transport import MaimemoTransport
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 TOKEN = "test-private-token"
 KEY = "independent-local-key"

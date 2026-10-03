@@ -8,9 +8,8 @@ from pathlib import Path
 from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from maimemo.database_url import parse_database_url
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-
-from maimemo_mcp.database_url import parse_database_url
 
 _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"

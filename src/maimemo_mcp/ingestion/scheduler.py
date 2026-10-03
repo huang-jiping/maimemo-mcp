@@ -2,16 +2,12 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from hashlib import sha256
 from typing import Literal
 
+from maimemo.ingestion.locks import advisory_key as advisory_key
+from maimemo.ingestion.normalizers import SHANGHAI, utc_instant
+
 from maimemo_mcp.config import Settings
-from maimemo_mcp.ingestion.normalizers import SHANGHAI, utc_instant
-
-
-def advisory_key(identity: str, scheduled_at: datetime) -> int:
-    payload = f"maimemo-worker:{identity}:{utc_instant(scheduled_at).isoformat()}".encode()
-    return int.from_bytes(sha256(payload).digest()[:8], "big", signed=True)
 
 
 @dataclass(frozen=True)

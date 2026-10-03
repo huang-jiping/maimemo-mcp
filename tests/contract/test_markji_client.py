@@ -8,16 +8,14 @@ from typing import Any
 import httpx
 import pytest
 import yaml
-from pydantic import BaseModel, SecretStr, ValidationError
-
-from maimemo_mcp.maimemo_client.errors import UpstreamSchemaError
-from maimemo_mcp.maimemo_client.markji import (
+from maimemo.api_client.errors import UpstreamSchemaError
+from maimemo.api_client.markji import (
     ListDecksRequest,
     ListFoldersRequest,
     MarkjiClient,
     QueryFilesRequest,
 )
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     GetCardResponse,
     GetChapterResponse,
     GetDeckResponse,
@@ -34,7 +32,8 @@ from maimemo_mcp.maimemo_client.models import (
     MarkjiRootDeck,
     QueryFilesResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo.api_client.transport import MaimemoTransport
+from pydantic import BaseModel, SecretStr, ValidationError
 
 FIXTURES = json.loads(
     (Path(__file__).parents[1] / "fixtures/maimemo/markji/responses.json").read_text(

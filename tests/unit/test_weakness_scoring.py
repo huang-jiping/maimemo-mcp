@@ -6,14 +6,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-
-from maimemo_mcp.analysis.models import (
+from maimemo.analysis.models import (
     DailyEvidence,
     RecentResponse,
     WeaknessEvidence,
     WeakWordQuery,
 )
-from maimemo_mcp.analysis.scoring import calculate_weakness
+from maimemo.analysis.scoring import calculate_weakness
 
 AT = datetime(2030, 10, 2, 12, tzinfo=UTC)
 WORD = UUID("00000000-0000-0000-0000-000000000001")

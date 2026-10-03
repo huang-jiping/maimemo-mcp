@@ -4,13 +4,13 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from maimemo_mcp.maimemo_client.markji import RequestModel
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.markji import RequestModel
+from maimemo.api_client.models import (
     StudyProgressResponse,
     StudyRecordsResponse,
     TodayItemsResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
+from maimemo.api_client.transport import MaimemoTransport
 
 
 class StudyDateRange(RequestModel):

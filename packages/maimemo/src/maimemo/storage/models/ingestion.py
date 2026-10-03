@@ -17,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from maimemo_mcp.storage.base import Base, UUIDPrimaryKey
+from maimemo.storage.base import Base, UUIDPrimaryKey
 
 
 class IngestionRun(UUIDPrimaryKey, Base):

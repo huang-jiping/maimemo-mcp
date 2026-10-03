@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     StudyProgressResponse,
     StudyRecordsResponse,
     TodayItemsResponse,
 )
-from maimemo_mcp.time import learning_date
+from maimemo.time import learning_date
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

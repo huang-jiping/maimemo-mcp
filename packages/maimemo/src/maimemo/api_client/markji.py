@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict
 
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     GetCardResponse,
     GetChapterResponse,
     GetDeckResponse,
@@ -11,7 +11,7 @@ from maimemo_mcp.maimemo_client.models import (
     ListFoldersResponse,
     QueryFilesResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport, encode_path_id
+from maimemo.api_client.transport import MaimemoTransport, encode_path_id
 
 
 class RequestModel(BaseModel):

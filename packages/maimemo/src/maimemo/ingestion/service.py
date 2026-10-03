@@ -10,34 +10,34 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maimemo_mcp.analysis.service import WeaknessService
-from maimemo_mcp.ingestion.hashing import stable_payload_hash
-from maimemo_mcp.ingestion.normalizers import (
+from maimemo.analysis.service import WeaknessService
+from maimemo.api_client.models import (
+    StudyProgressResponse,
+    StudyRecordsResponse,
+    TodayItemsResponse,
+)
+from maimemo.api_client.study import (
+    StudyDateRange,
+    StudyRecordsRequest,
+    TodayItemsRequest,
+)
+from maimemo.api_client.transport import (
+    HttpAttemptObservation,
+    SchemaFailureCapture,
+    capture_worker_schema_failures,
+    observe_http_attempts,
+)
+from maimemo.ingestion.hashing import stable_payload_hash
+from maimemo.ingestion.normalizers import (
     SHANGHAI,
     normalize_daily_progress,
     normalize_study_records,
     normalize_today_items,
     utc_instant,
 )
-from maimemo_mcp.maimemo_client.models import (
-    StudyProgressResponse,
-    StudyRecordsResponse,
-    TodayItemsResponse,
-)
-from maimemo_mcp.maimemo_client.study import (
-    StudyDateRange,
-    StudyRecordsRequest,
-    TodayItemsRequest,
-)
-from maimemo_mcp.maimemo_client.transport import (
-    HttpAttemptObservation,
-    SchemaFailureCapture,
-    capture_worker_schema_failures,
-    observe_http_attempts,
-)
-from maimemo_mcp.storage.models.ingestion import FailedApiSnapshot, IngestionRun
-from maimemo_mcp.storage.models.learning import DailyProgress
-from maimemo_mcp.storage.repositories import StudyHistoryRepository
+from maimemo.storage.models.ingestion import FailedApiSnapshot, IngestionRun
+from maimemo.storage.models.learning import DailyProgress
+from maimemo.storage.repositories import StudyHistoryRepository
 
 PROGRESS = "/api/v1/memo/study/get_study_progress"
 TODAY = "/api/v1/memo/study/get_today_items"

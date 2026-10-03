@@ -7,14 +7,14 @@ from datetime import datetime
 from time import perf_counter
 from uuid import uuid4
 
+from maimemo.ingestion.normalizers import SHANGHAI, utc_instant
+from maimemo.ingestion.service import IngestionResult, StudyIngestionService
+from maimemo.logging import log_event
+from maimemo.storage.models.ingestion import IngestionRun
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from maimemo_mcp.ingestion.normalizers import SHANGHAI, utc_instant
 from maimemo_mcp.ingestion.scheduler import Schedule, ScheduledJob, advisory_key
-from maimemo_mcp.ingestion.service import IngestionResult, StudyIngestionService
-from maimemo_mcp.logging import log_event
-from maimemo_mcp.storage.models.ingestion import IngestionRun
 
 logger = logging.getLogger(__name__)
 

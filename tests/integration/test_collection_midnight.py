@@ -5,15 +5,14 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from maimemo.api_client.study import StudyClient
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.ingestion.service import StudyIngestionService
+from maimemo.storage.models.ingestion import ApiSnapshot, IngestionRun
+from maimemo.storage.models.learning import DailyProgress, DailyWordObservation
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
-from maimemo_mcp.ingestion.service import StudyIngestionService
-from maimemo_mcp.maimemo_client.study import StudyClient
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
-from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
-from maimemo_mcp.storage.models.learning import DailyProgress, DailyWordObservation
 
 BEFORE = datetime(2030, 10, 2, 15, 59, 59, tzinfo=UTC)
 AFTER = BEFORE + timedelta(seconds=2)
@@ -99,9 +98,10 @@ async def test_global_lock_wait_refreshes_learning_date_before_first_request(
 async def test_default_worker_reuses_its_live_clock_for_midnight_checks(
     database: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from maimemo.api_client.models import StudyProgressResponse
+
     import maimemo_mcp.ingestion.worker as worker_module
     from maimemo_mcp.ingestion.scheduler import ScheduledJob
-    from maimemo_mcp.maimemo_client.models import StudyProgressResponse
     from tests.integration.test_worker_locking import Upstream, schedule
 
     instant = BEFORE

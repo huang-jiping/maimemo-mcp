@@ -2,16 +2,12 @@
 
 from typing import Annotated, Any
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
-from pydantic import Field
-
-from maimemo_mcp.maimemo_client.markji import (
+from maimemo.api_client.markji import (
     ListDecksRequest,
     ListFoldersRequest,
     QueryFilesRequest,
 )
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.models import (
     GetCardResponse,
     GetChapterResponse,
     GetDeckResponse,
@@ -20,6 +16,10 @@ from maimemo_mcp.maimemo_client.models import (
     ListFoldersResponse,
     QueryFilesResponse,
 )
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from pydantic import Field
+
 from maimemo_mcp.mcp_server.dependencies import Dependencies
 from maimemo_mcp.mcp_server.envelopes import ToolEnvelope
 from maimemo_mcp.mcp_server.tools.common import READ_ONLY, Clock, live_result

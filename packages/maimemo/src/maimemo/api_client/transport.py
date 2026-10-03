@@ -20,15 +20,15 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, SecretStr, ValidationError
 
-from maimemo_mcp.logging import log_event
-from maimemo_mcp.maimemo_client.errors import (
+from maimemo.api_client.errors import (
     AuthenticationError,
     InvalidRequestError,
     RateLimitError,
     UpstreamSchemaError,
     UpstreamUnavailableError,
 )
-from maimemo_mcp.maimemo_client.rate_limit import utc_now
+from maimemo.api_client.rate_limit import utc_now
+from maimemo.logging import log_event
 
 T = TypeVar("T", bound=BaseModel)
 BASE_URL = "https://open.maimemo.com/open"

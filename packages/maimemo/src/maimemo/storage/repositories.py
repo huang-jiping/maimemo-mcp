@@ -11,7 +11,7 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from maimemo_mcp.analysis.models import (
+from maimemo.analysis.models import (
     DailyEvidence,
     RecentResponse,
     WeaknessAnalysisState,
@@ -19,22 +19,22 @@ from maimemo_mcp.analysis.models import (
     WeaknessResult,
     WeakWordQuery,
 )
-from maimemo_mcp.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
-from maimemo_mcp.feedback.models import FeedbackQuery, normalize_spelling
-from maimemo_mcp.ingestion.hashing import stable_payload_hash
-from maimemo_mcp.ingestion.normalizers import (
+from maimemo.api_client.models import Vocabulary as UpstreamVocabulary
+from maimemo.config import DEFAULT_RECORDS_INTERVAL_MINUTES, DEFAULT_TODAY_INTERVAL_MINUTES
+from maimemo.feedback.models import FeedbackQuery, normalize_spelling
+from maimemo.ingestion.hashing import stable_payload_hash
+from maimemo.ingestion.locks import advisory_key
+from maimemo.ingestion.normalizers import (
     SHANGHAI,
     DailyProgressInput,
     DailyWordObservationInput,
     StudyRecordSnapshotInput,
     utc_instant,
 )
-from maimemo_mcp.ingestion.scheduler import advisory_key
-from maimemo_mcp.maimemo_client.models import Vocabulary as UpstreamVocabulary
-from maimemo_mcp.storage.models.analysis import WeaknessScore
-from maimemo_mcp.storage.models.feedback import LearningFeedbackEvent
-from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
-from maimemo_mcp.storage.models.learning import (
+from maimemo.storage.models.analysis import WeaknessScore
+from maimemo.storage.models.feedback import LearningFeedbackEvent
+from maimemo.storage.models.ingestion import ApiSnapshot, IngestionRun
+from maimemo.storage.models.learning import (
     DailyProgress,
     DailyWordObservation,
     StudyRecordSnapshot,

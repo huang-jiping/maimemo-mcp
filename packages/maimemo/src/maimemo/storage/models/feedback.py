@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from maimemo_mcp.storage.base import Base, UUIDPrimaryKey
+from maimemo.storage.base import Base, UUIDPrimaryKey
 
 
 class LearningFeedbackEvent(UUIDPrimaryKey, Base):

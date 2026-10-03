@@ -10,13 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from sqlalchemy.engine import URL
-
-from maimemo_mcp.database_url import (
+from maimemo.database_url import (
     DatabaseUrlError,
     parse_database_url,
     validate_database_url,
 )
+from sqlalchemy.engine import URL
 
 _CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 

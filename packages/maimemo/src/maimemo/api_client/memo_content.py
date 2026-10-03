@@ -4,8 +4,8 @@ from typing import Self
 
 from pydantic import Field, TypeAdapter, model_validator
 
-from maimemo_mcp.maimemo_client.markji import RequestModel
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.api_client.markji import RequestModel
+from maimemo.api_client.models import (
     GetNotepadResponse,
     InterpretationsResponse,
     ListNotepadsResponse,
@@ -14,7 +14,7 @@ from maimemo_mcp.maimemo_client.models import (
     QueryVocabularyResponse,
     VocabularyResponse,
 )
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport, encode_path_id
+from maimemo.api_client.transport import MaimemoTransport, encode_path_id
 
 _STRING_PARAMETER = TypeAdapter(str)
 

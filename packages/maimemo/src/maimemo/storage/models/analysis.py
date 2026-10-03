@@ -8,7 +8,7 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConst
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from maimemo_mcp.storage.base import Base, UUIDPrimaryKey
+from maimemo.storage.base import Base, UUIDPrimaryKey
 
 
 class WeaknessScore(UUIDPrimaryKey, Base):

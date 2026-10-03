@@ -9,17 +9,17 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from maimemo.api_client.errors import UpstreamSchemaError
+from maimemo.api_client.study import StudyClient
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.ingestion.service import StudyIngestionService
+from maimemo.storage.models.ingestion import ApiSnapshot, IngestionRun
+from maimemo.storage.models.learning import DailyProgress, DailyWordObservation
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from maimemo_mcp.ingestion.service import StudyIngestionService
-from maimemo_mcp.maimemo_client.errors import UpstreamSchemaError
-from maimemo_mcp.maimemo_client.study import StudyClient
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
-from maimemo_mcp.storage.models.ingestion import ApiSnapshot, IngestionRun
-from maimemo_mcp.storage.models.learning import DailyProgress, DailyWordObservation
 from tests.integration.test_collection_midnight import PROGRESS, TODAY
 
 AT = datetime(2030, 10, 2, 12, tzinfo=UTC)
@@ -91,7 +91,7 @@ async def test_schema_archive_rollback_preserves_baseline_and_hides_raw(
             if failure_endpoint == "progress":
                 await client.get_progress()
             else:
-                from maimemo_mcp.maimemo_client.study import TodayItemsRequest
+                from maimemo.api_client.study import TodayItemsRequest
                 await client.get_today_items(TodayItemsRequest())
         assert PRIVATE not in str(caught.value)
         assert caught.value.__context__ is None

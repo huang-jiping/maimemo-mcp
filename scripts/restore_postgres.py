@@ -8,9 +8,8 @@ import sys
 from pathlib import Path
 
 from _postgres_cli import PostgresTools, database_url_from_env, resolved_dump_input
+from maimemo.database_url import DatabaseUrlError
 from sqlalchemy.engine import URL
-
-from maimemo_mcp.database_url import DatabaseUrlError
 
 # PostgreSQL identifiers are at most 63 bytes.  The fixed ASCII prefix is 16
 # bytes, so cap the suffix at 47 rather than relying on server-side truncation.

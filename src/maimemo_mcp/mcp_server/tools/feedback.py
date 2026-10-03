@@ -2,12 +2,7 @@
 
 from typing import Any
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
-from mcp_types import ToolAnnotations
-from pydantic import Field, StrictBool
-
-from maimemo_mcp.feedback.models import (
+from maimemo.feedback.models import (
     EvidenceType,
     FeedbackDirection,
     FeedbackEventView,
@@ -16,7 +11,12 @@ from maimemo_mcp.feedback.models import (
     RecordFeedbackCommand,
     RetractFeedbackCommand,
 )
-from maimemo_mcp.ingestion.normalizers import SHANGHAI
+from maimemo.ingestion.normalizers import SHANGHAI
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp_types import ToolAnnotations
+from pydantic import Field, StrictBool
+
 from maimemo_mcp.mcp_server.dependencies import Dependencies
 from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
 from maimemo_mcp.mcp_server.tools.common import Clock

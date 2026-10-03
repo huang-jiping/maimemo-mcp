@@ -4,19 +4,20 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
+)
+from sqlalchemy.ext.asyncio import (
+    create_async_engine as _sqlalchemy_create_async_engine,
 )
 
-from maimemo_mcp.config import Settings
-from maimemo_mcp.database_url import DatabaseUrlError, parse_database_url
+from maimemo.database_url import DatabaseUrlError, parse_database_url
 
 
-def create_async_engine_from_settings(settings: Settings) -> AsyncEngine:
+def create_async_engine(database_url: str) -> AsyncEngine:
     try:
         url = parse_database_url(
-            settings.database_url, required_driver="postgresql+psycopg"
+            database_url, required_driver="postgresql+psycopg"
         )
-        return create_async_engine(
+        return _sqlalchemy_create_async_engine(
             url,
             pool_pre_ping=True,
             connect_args={"options": "-c timezone=UTC"},

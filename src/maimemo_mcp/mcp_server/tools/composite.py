@@ -5,24 +5,24 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
-from mcp_types import ToolAnnotations
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
-
-from maimemo_mcp.analysis.models import WeaknessAnalysisState, WeaknessResult, WeakWordQuery
-from maimemo_mcp.feedback.models import normalize_spelling
-from maimemo_mcp.ingestion.normalizers import SHANGHAI, utc_instant
-from maimemo_mcp.maimemo_client.models import (
+from maimemo.analysis.models import WeaknessAnalysisState, WeaknessResult, WeakWordQuery
+from maimemo.api_client.models import (
     InterpretationsResponse,
     NotesResponse,
     PhrasesResponse,
     VocabularyResponse,
 )
+from maimemo.feedback.models import normalize_spelling
+from maimemo.ingestion.normalizers import SHANGHAI, utc_instant
+from maimemo.storage.repositories import DataHealth
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp_types import ToolAnnotations
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
+
 from maimemo_mcp.mcp_server.dependencies import Dependencies
 from maimemo_mcp.mcp_server.envelopes import Completeness, ToolEnvelope, ToolMeta
 from maimemo_mcp.mcp_server.tools.common import Clock
-from maimemo_mcp.storage.repositories import DataHealth
 
 ToolContext = Context[Dependencies, Any]
 LOCAL_READ = ToolAnnotations(

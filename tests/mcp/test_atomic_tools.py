@@ -17,14 +17,14 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from maimemo.api_client.markji import MarkjiClient
+from maimemo.api_client.memo_content import MemoContentClient
+from maimemo.api_client.study import StudyClient
 from mcp.client import Client
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from maimemo_mcp.config import Settings
-from maimemo_mcp.maimemo_client.markji import MarkjiClient
-from maimemo_mcp.maimemo_client.memo_content import MemoContentClient
-from maimemo_mcp.maimemo_client.study import StudyClient
 from maimemo_mcp.mcp_server.app import MCPServer, create_mcp_app
 
 if sys.platform == "win32":

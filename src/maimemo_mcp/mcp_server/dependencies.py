@@ -7,17 +7,17 @@ from dataclasses import dataclass
 
 import anyio
 import httpx
+from maimemo.analysis.service import WeaknessService
+from maimemo.api_client.markji import MarkjiClient
+from maimemo.api_client.memo_content import MemoContentClient
+from maimemo.api_client.rate_limit import SharedRateLimiter
+from maimemo.api_client.study import StudyClient
+from maimemo.api_client.transport import MaimemoTransport
+from maimemo.feedback.service import FeedbackService
+from maimemo.storage.database import create_async_engine, create_session_factory
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from maimemo_mcp.analysis.service import WeaknessService
 from maimemo_mcp.config import Settings
-from maimemo_mcp.feedback.service import FeedbackService
-from maimemo_mcp.maimemo_client.markji import MarkjiClient
-from maimemo_mcp.maimemo_client.memo_content import MemoContentClient
-from maimemo_mcp.maimemo_client.rate_limit import SharedRateLimiter
-from maimemo_mcp.maimemo_client.study import StudyClient
-from maimemo_mcp.maimemo_client.transport import MaimemoTransport
-from maimemo_mcp.storage.database import create_async_engine_from_settings, create_session_factory
 
 
 @dataclass(frozen=True, repr=False)
@@ -38,7 +38,7 @@ class Dependencies:
 async def open_dependencies(settings: Settings) -> AsyncIterator[Dependencies]:
     stack = AsyncExitStack()
     try:
-        engine = create_async_engine_from_settings(settings)
+        engine = create_async_engine(settings.database_url)
         stack.push_async_callback(engine.dispose)
         sessions = create_session_factory(engine)
         http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)

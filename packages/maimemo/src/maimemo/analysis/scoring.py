@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from maimemo_mcp.analysis.models import (
+from maimemo.analysis.models import (
     DailyEvidence,
     WeaknessEvidence,
     WeaknessFactor,

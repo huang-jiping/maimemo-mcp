@@ -1,6 +1,14 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
+
+[manifest]
+members = [
+    "maimemo",
+    "maimemo-mcp",
+    "maimemo-server",
+    "maimemo-worker",
+]
 
 [[package]]
 name = "alembic"
@@ -310,6 +318,11 @@ wheels = [
 ]
 
 [[package]]
+name = "maimemo"
+version = "0.2.0"
+source = { editable = "packages/maimemo" }
+
+[[package]]
 name = "maimemo-mcp"
 version = "0.1.0"
 source = { editable = "." }
@@ -355,6 +368,28 @@ dev = [
     { name = "ruff", specifier = ">=0.12,<1" },
     { name = "types-pyyaml", specifier = ">=6,<7" },
 ]
+
+[[package]]
+name = "maimemo-server"
+version = "0.2.0"
+source = { editable = "packages/maimemo-server" }
+dependencies = [
+    { name = "maimemo" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maimemo", editable = "packages/maimemo" }]
+
+[[package]]
+name = "maimemo-worker"
+version = "0.2.0"
+source = { editable = "packages/maimemo-worker" }
+dependencies = [
+    { name = "maimemo" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maimemo", editable = "packages/maimemo" }]
 
 [[package]]
 name = "mako"

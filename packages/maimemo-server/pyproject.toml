@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maimemo-server"
+version = "0.2.0"
+description = "Maimemo HTTP server"
+requires-python = ">=3.12,<3.13"
+dependencies = ["maimemo>=0.2.0,<0.3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maimemo_server"]

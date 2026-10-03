@@ -46,3 +46,11 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+maimemo = { workspace = true }
+maimemo-server = { workspace = true }
+maimemo-worker = { workspace = true }

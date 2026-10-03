@@ -1,0 +1,79 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: maimemo_test
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: maimemo_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U maimemo_test -d maimemo_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      MAIMEMO_TEST_DATABASE_URL: postgresql+psycopg://maimemo_test:test_only@127.0.0.1:55432/maimemo_test
+      MAIMEMO_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.22"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Verify lock file
+        run: uv lock --check
+
+      - name: Install locked workspace
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check packages
+        run: >-
+          uv run mypy packages/maimemo/src packages/maimemo-server/src
+          packages/maimemo-mcp/src packages/maimemo-worker/src
+
+      - name: Run deterministic tests
+        run: >-
+          uv run python -m pytest -q
+          --ignore=tests/docker
+          --ignore=tests/integration/test_drift_permissions.py
+
+      - name: Build four Python packages
+        run: |
+          uv build --package maimemo
+          uv build --package maimemo-server
+          uv build --package maimemo-mcp
+          uv build --package maimemo-worker
+
+      - name: Build Server image
+        run: docker build --target server -t maimemo-server:test -f docker/Dockerfile .
+
+      - name: Build MCP image
+        run: docker build --target mcp -t maimemo-mcp:test -f docker/Dockerfile .
+
+      - name: Build Worker image
+        run: docker build --target worker -t maimemo-worker:test -f docker/Dockerfile .
+
+      - name: Run complete test suite
+        run: uv run python -m pytest -q

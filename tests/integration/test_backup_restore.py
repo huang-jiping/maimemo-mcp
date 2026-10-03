@@ -30,6 +30,12 @@ def _run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedP
 
 
 def _postgres_container() -> str:
+    service_container = os.environ.get("MAIMEMO_TEST_POSTGRES_CONTAINER", "").strip()
+    if service_container:
+        result = _run("docker", "inspect", "--format", "{{.State.Running}}", service_container)
+        if result.stdout.strip() != "true":
+            raise RuntimeError("The configured disposable postgres service is not running")
+        return service_container
     result = _run(
         "docker",
         "compose",

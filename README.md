@@ -1,5 +1,7 @@
 # maimemo-mcp
 
+[![CI](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml/badge.svg)](https://github.com/huang-jiping/maimemo/actions/workflows/ci.yml)
+
 墨墨学习数据基础设施，使用 Python 3.12、PostgreSQL 和 MCP Python SDK v2。项目接入
 17 个墨墨只读操作，使用 Worker 建立可追溯的学习历史，通过 5 个组合工具提供进度、
 单词画像、薄弱词、复习压力和数据健康信息，并用 2 个本地追加式工具记录和撤销混淆反馈。
@@ -31,7 +33,7 @@ MCP 默认监听 `0.0.0.0:8000`，便于容器内 Tunnel 访问；部署时不�
 本次基线包含 38 个操作，其中设计批准的 17 个操作按业务语义只读，包含查询类 POST。
 固定规范不表示允许调用其中的写操作；本项目墨墨侧范围严格只读。
 
-设计和实施计划见 `docs/superpowers/`。
+设计和实施计划见 `docs/superpowers/`；镜像发布与验收规则见 `docs/operations.md`。
 
 ## 运行形态
 

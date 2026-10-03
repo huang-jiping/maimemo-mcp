@@ -139,9 +139,11 @@ def test_nas_guides_cover_ugos_lifecycle_backup_and_readonly_secret_checks(docum
         "2 / 2", "拉取", "重建", "自动迁移", "上一", "破坏性", "停止整个项目",
         "pgAdmin", "整个 `maimemo` 数据库", "恢复演练", "alembic_version", "schema_metadata",
         "UID 1000 / GID 10", "0400", "ACL", "只读", "六小时", "0644", "0700",
-        "真实 Docker DNS", "本地 `.env`", "fingerprint key", "未验证", "未发布",
+        "真实 Docker DNS", "本地 `.env`", "fingerprint key", "未验证", "已发布",
+        "v0.1.0", "sha256:2fc31dcab9d514d13b1abf3da499ae1ddd64e8d7e92a72743b4f18f1bdbf0680",
     ):
         assert requirement in guide, f"{document} missing deployment contract: {requirement}"
+    assert "未发布" not in guide
 
 
 @pytest.mark.parametrize("document", ["DEPLOYMENT.md", "docs/operations.md", "README.md"])

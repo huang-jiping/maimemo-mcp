@@ -5,7 +5,10 @@ NAS 的日常控制面是 UGOS Pro **Docker → 项目 → 创建/导入**：使
 `2 / 2`。两个容器拉取同一 `ghcr.io/huang-jiping/maimemo-mcp:${IMAGE_TAG:-stable}`；
 MCP 自动迁移并校验 schema，Worker 等待健康再采集。部署入口见
 [DEPLOYMENT.md](../DEPLOYMENT.md)。以下 1–6 节为生产运维，7–10 节为开发工作站的独立
-诊断/评测证据，不能当作 NAS 的部署依赖。首个公开镜像未发布，NAS/UGOS 实机未验证。
+诊断/评测证据，不能当作 NAS 的部署依赖。首个公开镜像已发布：`v0.1.0`、提交标签和
+`stable` 已通过匿名清单查询，均指向
+`sha256:2fc31dcab9d514d13b1abf3da499ae1ddd64e8d7e92a72743b4f18f1bdbf0680`，镜像为
+`linux/amd64` 且运行用户为 `1000:10`。NAS/UGOS 实机未验证，仍须完成以下门禁。
 
 ## 1. 部署前准备
 
